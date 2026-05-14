@@ -103,10 +103,41 @@ float dataYPos;
 String dataValue;
 
 //State Machine Vars
-enum {idle, drawing, pausing, aborting, launchpad, noSD};
-unsigned char machineState = 1;
+enum MachineState {idle, drawing, pausing, aborting, launchpad, noSD};
+enum DrawOutcome {drawNone, drawFinished, drawAborted, drawError};
+enum CommandType {
+  cmdNone,
+  cmdDrawFromFile,
+  cmdWriteToFile,
+  cmdSetSpeed,
+  cmdMove,
+  cmdStepL,
+  cmdStepR,
+  cmdOutlineCanvas,
+  cmdReturnToOrigin,
+  cmdReturnToHome,
+  cmdResetHome,
+  cmdTerminate,
+  cmdMonitoringOn,
+  cmdMonitoringOff,
+  cmdAbort,
+  cmdPause,
+  cmdContinue,
+  cmdPosition,
+  cmdRetrySD
+};
+
+MachineState machineState = idle;
+DrawOutcome drawOutcome = drawNone;
+CommandType pendingCommand = cmdNone;
+float pendingArgument1 = 0.0f;
+float pendingArgument2 = 0.0f;
+boolean hasPendingCommand = false;
+boolean drawingFileOpen = false;
 int loopCounter = 0;
 int cycleLength = 2000;
+unsigned long lastSDRetryAt = 0;
+const unsigned long sdRetryIntervalMs = 2000;
 
 ///////////////////////////////////////////////////
 // SETTINGS                                      //
@@ -202,9 +233,8 @@ void setup() {
   currentA = getA(scan, feed);
   currentB = getB(scan, feed);
 
-  machineState = noSD;
-  if ( initialiseSD() ) machineState = idle;
-  if ( machineState == noSD ) Serial.println(F("state->noSD"));
+  enterState(noSD);
+  if ( initialiseSD() ) enterState(idle);
 
   if ( scan != 0 && feed != 0 ) {
     Serial.println(F("_____________________________________"));
@@ -230,157 +260,494 @@ void setup() {
 }
 
 void loop() {
-  //statelist:
-  //->idle (1)
-  //->drawing (2)
-  //->pausing (3)
-  //->aborting (4)
-  //->launchpad (5)
-  //->noSD (6)
-
-  //update the Serial controller
   controller();
 
   switch (machineState) {
 
     case idle:
-      digitalWrite(LED1, HIGH);
-      digitalWrite(LED2, LOW);
-      digitalWrite(LED3, LOW);
-      digitalWrite(LED4, LOW);
-      filePointer = getRotaryPosition(A14);
-      setCarriageSpeed();
-      if ( digitalRead(toggle1) == LOW ) machineState = drawing;
-      if ( digitalRead(toggle3) == LOW ) {
-        resetHome();
-        machineState = launchpad;
-        Serial.println(F("state->launchpad"));
-      }
-      if ( digitalRead(toggle4) == LOW ) returnToOrigin();
+      handleIdleState();
       break;
 
     case drawing:
-      Serial.println(F("state->drawing"));
-      openDataFile(filePointer);
-      digitalWrite(LED2, HIGH);
-      while ( dataFile.available() && machineState != aborting ) {
-        setCarriageSpeed();
-        //this is the break case, can set state to pausing
-        //via serial
-        if ( Serial.available() ) {
-          String command = Serial.readStringUntil('\n');
-          if ( command == "abort") {
-            machineState = aborting;
-          }
-          if ( command == "pause" ) {
-            Serial.println(F("state->pausing"));
-            machineState = pausing;
-          }
-        }
-        //or via toggle switch
-        if (digitalRead(toggle1) == HIGH ) {
-          machineState = aborting;
-        }
-        if (digitalRead(toggle2) == LOW ) {
-          Serial.println(F("state->pausing"));
-          machineState = pausing;
-        }
+      handleDrawingState();
+      break;
 
-        //this enables pausing, can set state to aborting
-        while ( machineState == pausing ) {
-          digitalWrite(LED3, HIGH);
-          if ( Serial.available() ) {
-            String command = Serial.readStringUntil('\n');
-            if ( command == "abort" ) {
-              digitalWrite(LED3, LOW);
-              machineState = aborting;
-            }
-            if ( command == "continue" ) {
-              digitalWrite(LED3, LOW);
-              Serial.println(F("state->drawing"));
-              machineState = drawing;
-            }
-          }
-          if (digitalRead(toggle1) == HIGH ) {
-            digitalWrite(LED3, LOW);
-            machineState = aborting;
-          }
-          if (digitalRead(toggle2) == HIGH ) {
-            digitalWrite(LED3, LOW);
-            Serial.println(F("state->drawing"));
-            machineState = drawing;
-          }
-        }
-
-        //this is the sauce
-        //readInstruction() puts its data in the dataXXX vars
-        readInstruction();
-        if ( dataCommand == "move" ) {
-          gesture(dataXPos, dataYPos);
-        } else if ( dataCommand == "type" ) {
-          type = dataValue;
-        } else if ( dataCommand == "mode" ) {
-          mode = dataValue;
-        } else if ( dataCommand == "adjustment" ) {
-          adjustmentType = dataValue;
-        }
-      }
-      Serial.println("drawing complete");
-      returnToOrigin();
-      gestureCount = 0;
-      machineState = aborting;
+    case pausing:
+      handlePausedState();
       break;
 
     case aborting:
-      Serial.println(F("state->aborting"));
-      dataFile.close();
-      Serial.println("closing dataFile");
-      digitalWrite(LED2, LOW);
-      machineState = idle;
-      Serial.println(F("state->idle"));
+      handleAbortingState();
       break;
 
     case launchpad:
-      //LED MONITORING
-      if ( loopCounter > 0 && loopCounter < cycleLength / 2 ) {
-        digitalWrite(LED1, HIGH);
-        digitalWrite(LED2, HIGH);
-        digitalWrite(LED3, HIGH);
-        digitalWrite(LED4, HIGH);
-      } else {
-        digitalWrite(LED1, LOW);
-        digitalWrite(LED2, LOW);
-        digitalWrite(LED3, LOW);
-        digitalWrite(LED4, LOW);
-      }
-      loopCounter++;
-      if ( loopCounter == cycleLength ) loopCounter = 0;
-      //ACTUAL PROGRAM
-      if ( digitalRead(toggle4) == LOW ) {
-        machineState = idle;
-        returnToOrigin();
-        Serial.println(F("state->idle"));
-      }
+      handleLaunchpadState();
       break;
 
     case noSD:
-      //LED MONITORING
-      if ( loopCounter > 0 && loopCounter < cycleLength / 2 ) {
-        digitalWrite(LED1, HIGH);
-      } else {
-        digitalWrite(LED1, LOW);
-      }
-      loopCounter++;
-      if ( loopCounter == cycleLength ) loopCounter = 0;
+      handleNoSDState();
       break;
 
     default:
       Serial.println(F("state->default"));
-      machineState = idle;
+      enterState(idle);
       break;
 
   }
 
+}
+
+const char* getStateName(MachineState state) {
+  switch (state) {
+    case idle: return "idle";
+    case drawing: return "drawing";
+    case pausing: return "pausing";
+    case aborting: return "aborting";
+    case launchpad: return "launchpad";
+    case noSD: return "noSD";
+    default: return "unknown";
+  }
+}
+
+void enterState(MachineState nextState) {
+  if ( nextState == machineState ) return;
+  machineState = nextState;
+  Serial.print(F("state->"));
+  Serial.println(getStateName(machineState));
+
+  if ( machineState == drawing ) {
+    drawOutcome = drawNone;
+    drawingFileOpen = false;
+  } else if ( machineState == aborting && drawOutcome == drawNone ) {
+    drawOutcome = drawAborted;
+  } else if ( machineState == noSD ) {
+    lastSDRetryAt = millis();
+  }
+}
+
+void clearPendingCommand() {
+  pendingCommand = cmdNone;
+  pendingArgument1 = 0.0f;
+  pendingArgument2 = 0.0f;
+  hasPendingCommand = false;
+}
+
+void rejectPendingCommand() {
+  Serial.print(F("command unavailable in state "));
+  Serial.println(getStateName(machineState));
+  clearPendingCommand();
+}
+
+boolean handleSharedCommand() {
+  if ( !hasPendingCommand ) return false;
+
+  switch (pendingCommand) {
+    case cmdSetSpeed:
+      minStepperDelay = int(pendingArgument1);
+      minStepperPulse = int(pendingArgument1);
+      Serial.print(F("speed set at\t"));
+      Serial.println(int(pendingArgument1));
+      clearPendingCommand();
+      return true;
+
+    case cmdMonitoringOn:
+      monitoring = true;
+      Serial.println(F("monitoring on"));
+      clearPendingCommand();
+      return true;
+
+    case cmdMonitoringOff:
+      monitoring = false;
+      Serial.println(F("monitoring off"));
+      clearPendingCommand();
+      return true;
+
+    case cmdPosition:
+      printPosition();
+      clearPendingCommand();
+      return true;
+
+    case cmdTerminate:
+      terminate();
+      clearPendingCommand();
+      return true;
+
+    default:
+      return false;
+  }
+}
+
+boolean handleManualMotionCommand() {
+  if ( !hasPendingCommand ) return false;
+
+  switch (pendingCommand) {
+    case cmdMove:
+      type = "absolute";
+      Serial.print(F("moving to\t"));
+      Serial.print(pendingArgument1);
+      Serial.print(",");
+      Serial.println(pendingArgument2);
+      gesture(pendingArgument1, pendingArgument2);
+      printPosition();
+      clearPendingCommand();
+      return true;
+
+    case cmdStepL:
+      Serial.print(F("stepping left motor: "));
+      Serial.println(int(pendingArgument1));
+      stepL(int(pendingArgument1));
+      clearPendingCommand();
+      return true;
+
+    case cmdStepR:
+      Serial.print(F("stepping right motor: "));
+      Serial.println(int(pendingArgument1));
+      stepR(int(pendingArgument1));
+      clearPendingCommand();
+      return true;
+
+    case cmdOutlineCanvas:
+      type = "absolute";
+      printPosition();
+      for ( int x = 0; x <= width; x++ ) {
+        movePenSegmented(x, 0);
+      }
+      printPosition();
+      for ( int x = 0; x <= height; x++ ) {
+        movePenSegmented(width, x);
+      }
+      printPosition();
+      for ( int x = 0; x <= width; x++ ) {
+        movePenSegmented(width - x, height);
+      }
+      printPosition();
+      for ( int x = 0; x <= height; x++ ) {
+        movePenSegmented(0, height - x);
+      }
+      printPosition();
+      Serial.println(F("done"));
+      clearPendingCommand();
+      return true;
+
+    case cmdReturnToOrigin:
+      returnToOrigin();
+      clearPendingCommand();
+      return true;
+
+    case cmdReturnToHome:
+      returnToHome();
+      clearPendingCommand();
+      return true;
+
+    case cmdResetHome:
+      resetHome();
+      enterState(launchpad);
+      clearPendingCommand();
+      return true;
+
+    default:
+      return false;
+  }
+}
+
+boolean handleDrawingInstruction() {
+  if ( !readInstruction() ) return false;
+
+  if ( dataCommand == "move" ) {
+    gesture(dataXPos, dataYPos);
+  } else if ( dataCommand == "type" ) {
+    type = dataValue;
+  } else if ( dataCommand == "mode" ) {
+    mode = dataValue;
+  } else if ( dataCommand == "adjustment" ) {
+    adjustmentType = dataValue;
+  } else if ( dataCommand.length() ) {
+    Serial.print(F("unknown instruction:\t"));
+    Serial.println(dataCommand);
+  }
+
+  return true;
+}
+
+void handleIdleState() {
+  digitalWrite(LED1, HIGH);
+  digitalWrite(LED2, LOW);
+  digitalWrite(LED3, LOW);
+  digitalWrite(LED4, LOW);
+
+  filePointer = getRotaryPosition(A14);
+  setCarriageSpeed();
+
+  if ( handleSharedCommand() ) return;
+  if ( handleManualMotionCommand() ) return;
+
+  if ( hasPendingCommand ) {
+    if ( pendingCommand == cmdDrawFromFile ) {
+      if ( !initialiseSDQuietly() ) {
+        Serial.println(F("SD unavailable"));
+        enterState(noSD);
+      } else {
+        filePointer = int(pendingArgument1);
+        clearPendingCommand();
+        enterState(drawing);
+      }
+      return;
+    }
+
+    if ( pendingCommand == cmdWriteToFile ) {
+      if ( !initialiseSDQuietly() ) {
+        Serial.println(F("SD unavailable"));
+        enterState(noSD);
+      } else if ( initialiseWriteData(int(pendingArgument2)) ) {
+        Serial.println(F("started writing"));
+        drawingLibrary(int(pendingArgument1));
+        closeData();
+      }
+      clearPendingCommand();
+      return;
+    }
+
+    rejectPendingCommand();
+    return;
+  }
+
+  if ( digitalRead(toggle1) == LOW ) {
+    if ( initialiseSDQuietly() ) {
+      enterState(drawing);
+    } else {
+      Serial.println(F("SD unavailable"));
+      enterState(noSD);
+    }
+    return;
+  }
+
+  if ( digitalRead(toggle3) == LOW ) {
+    resetHome();
+    enterState(launchpad);
+    return;
+  }
+
+  if ( digitalRead(toggle4) == LOW ) {
+    returnToOrigin();
+  }
+}
+
+void handleDrawingState() {
+  digitalWrite(LED1, LOW);
+  digitalWrite(LED2, HIGH);
+  digitalWrite(LED3, LOW);
+  digitalWrite(LED4, LOW);
+
+  setCarriageSpeed();
+
+  if ( !drawingFileOpen ) {
+    if ( !openDataFile(filePointer) ) {
+      drawOutcome = drawError;
+      enterState(aborting);
+      return;
+    }
+    drawingFileOpen = true;
+  }
+
+  if ( handleSharedCommand() ) return;
+
+  if ( hasPendingCommand ) {
+    if ( pendingCommand == cmdAbort ) {
+      drawOutcome = drawAborted;
+      clearPendingCommand();
+      enterState(aborting);
+      return;
+    }
+
+    if ( pendingCommand == cmdPause ) {
+      clearPendingCommand();
+      enterState(pausing);
+      return;
+    }
+
+    rejectPendingCommand();
+    return;
+  }
+
+  if ( digitalRead(toggle1) == HIGH ) {
+    drawOutcome = drawAborted;
+    enterState(aborting);
+    return;
+  }
+
+  if ( digitalRead(toggle2) == LOW ) {
+    enterState(pausing);
+    return;
+  }
+
+  if ( !dataFile || !dataFile.available() ) {
+    drawOutcome = drawFinished;
+    enterState(aborting);
+    return;
+  }
+
+  if ( !handleDrawingInstruction() ) {
+    drawOutcome = drawFinished;
+    enterState(aborting);
+  }
+}
+
+void handlePausedState() {
+  digitalWrite(LED1, LOW);
+  digitalWrite(LED2, HIGH);
+  digitalWrite(LED3, HIGH);
+  digitalWrite(LED4, LOW);
+
+  if ( handleSharedCommand() ) return;
+
+  if ( hasPendingCommand ) {
+    if ( pendingCommand == cmdAbort ) {
+      drawOutcome = drawAborted;
+      clearPendingCommand();
+      enterState(aborting);
+      return;
+    }
+
+    if ( pendingCommand == cmdContinue ) {
+      clearPendingCommand();
+      enterState(drawing);
+      return;
+    }
+
+    rejectPendingCommand();
+    return;
+  }
+
+  if ( digitalRead(toggle1) == HIGH ) {
+    drawOutcome = drawAborted;
+    enterState(aborting);
+    return;
+  }
+
+  if ( digitalRead(toggle2) == HIGH ) {
+    enterState(drawing);
+  }
+}
+
+void handleAbortingState() {
+  digitalWrite(LED2, LOW);
+  digitalWrite(LED3, LOW);
+
+  if ( dataFile ) {
+    dataFile.close();
+    Serial.println(F("closing dataFile"));
+  }
+  drawingFileOpen = false;
+
+  if ( drawOutcome == drawFinished ) {
+    Serial.println(F("drawing complete"));
+    returnToOrigin();
+  } else if ( drawOutcome == drawAborted ) {
+    Serial.println(F("drawing aborted"));
+  } else if ( drawOutcome == drawError ) {
+    Serial.println(F("drawing error"));
+  }
+
+  gestureCount = 0;
+  drawOutcome = drawNone;
+  enterState(idle);
+}
+
+void handleLaunchpadState() {
+  if ( loopCounter > 0 && loopCounter < cycleLength / 2 ) {
+    digitalWrite(LED1, HIGH);
+    digitalWrite(LED2, HIGH);
+    digitalWrite(LED3, HIGH);
+    digitalWrite(LED4, HIGH);
+  } else {
+    digitalWrite(LED1, LOW);
+    digitalWrite(LED2, LOW);
+    digitalWrite(LED3, LOW);
+    digitalWrite(LED4, LOW);
+  }
+  loopCounter++;
+  if ( loopCounter == cycleLength ) loopCounter = 0;
+
+  if ( handleSharedCommand() ) return;
+  if ( handleManualMotionCommand() ) return;
+  if ( hasPendingCommand ) {
+    rejectPendingCommand();
+    return;
+  }
+
+  if ( digitalRead(toggle4) == LOW ) {
+    returnToOrigin();
+    enterState(idle);
+  }
+}
+
+void handleNoSDState() {
+  if ( loopCounter > 0 && loopCounter < cycleLength / 2 ) {
+    digitalWrite(LED1, HIGH);
+  } else {
+    digitalWrite(LED1, LOW);
+  }
+  digitalWrite(LED2, LOW);
+  digitalWrite(LED3, LOW);
+  digitalWrite(LED4, LOW);
+
+  loopCounter++;
+  if ( loopCounter == cycleLength ) loopCounter = 0;
+
+  filePointer = getRotaryPosition(A14);
+  setCarriageSpeed();
+
+  if ( handleSharedCommand() ) return;
+  if ( handleManualMotionCommand() ) return;
+
+  if ( hasPendingCommand ) {
+    if ( pendingCommand == cmdRetrySD ) {
+      if ( initialiseSD() ) enterState(idle);
+      clearPendingCommand();
+      return;
+    }
+
+    if ( pendingCommand == cmdDrawFromFile ) {
+      if ( initialiseSD() ) {
+        filePointer = int(pendingArgument1);
+        clearPendingCommand();
+        enterState(drawing);
+      } else {
+        clearPendingCommand();
+      }
+      return;
+    }
+
+    if ( pendingCommand == cmdWriteToFile ) {
+      if ( initialiseSD() && initialiseWriteData(int(pendingArgument2)) ) {
+        Serial.println(F("started writing"));
+        drawingLibrary(int(pendingArgument1));
+        closeData();
+        enterState(idle);
+      }
+      clearPendingCommand();
+      return;
+    }
+
+    rejectPendingCommand();
+    return;
+  }
+
+  if ( digitalRead(toggle3) == LOW ) {
+    resetHome();
+    enterState(launchpad);
+    return;
+  }
+
+  if ( digitalRead(toggle4) == LOW ) {
+    returnToOrigin();
+    return;
+  }
+
+  if ( millis() - lastSDRetryAt >= sdRetryIntervalMs ) {
+    lastSDRetryAt = millis();
+    if ( initialiseSDQuietly() ) enterState(idle);
+  }
 }
 
 ///////////////////////////////////////////////////
@@ -417,20 +784,31 @@ float segmentAdjustment(float scanLine, float feedLine, String getter) {
 // SD FUNCTION FAMILY                            //
 ///////////////////////////////////////////////////
 
-boolean initialiseSD() {
-  Serial.println(F("Initialising SD card..."));
+boolean attemptSDInitialisation(boolean verbose) {
+  if ( verbose ) Serial.println(F("Initialising SD card..."));
   if ( !SD.begin(10, 11, 12, 13)) {
-    Serial.println(F("Initialisation failed"));
+    if ( verbose ) Serial.println(F("Initialisation failed"));
     return false;
-  } else {
-    Serial.println(F("Initialisation done"));
-    Serial.println("");
-    return true;
   }
 
+  if ( verbose ) {
+    Serial.println(F("Initialisation done"));
+    Serial.println("");
+  }
+  return true;
 }
 
-void openDataFile(int file) {
+boolean initialiseSD() {
+  return attemptSDInitialisation(true);
+}
+
+boolean initialiseSDQuietly() {
+  return attemptSDInitialisation(false);
+}
+
+boolean openDataFile(int file) {
+  if ( dataFile ) dataFile.close();
+
   if ( file == 0 ) dataFile = SD.open("0.txt", FILE_READ);
   if ( file == 1 ) dataFile = SD.open("1.txt", FILE_READ);
   if ( file == 2 ) dataFile = SD.open("2.txt", FILE_READ);
@@ -443,10 +821,19 @@ void openDataFile(int file) {
   if ( file == 9 ) dataFile = SD.open("9.txt", FILE_READ);
   if ( file == 10 ) dataFile = SD.open("10.txt", FILE_READ);
   if ( file == 11 ) dataFile = SD.open("11.txt", FILE_READ);
-  if (!dataFile) Serial.println(F("->error opening data.txt"));
+  if ( !dataFile ) {
+    Serial.println(F("->error opening data.txt"));
+    return false;
+  }
+
+  Serial.print(F("opened data file\t"));
+  Serial.println(file);
+  return true;
 }
 
-void initialiseWriteData(int file) {
+boolean initialiseWriteData(int file) {
+  if ( dataFile ) dataFile.close();
+
   if ( file == 0 ) dataFile = SD.open("0.txt", FILE_WRITE | O_TRUNC);
   if ( file == 1 ) dataFile = SD.open("1.txt", FILE_WRITE | O_TRUNC);
   if ( file == 2 ) dataFile = SD.open("2.txt", FILE_WRITE | O_TRUNC);
@@ -459,9 +846,14 @@ void initialiseWriteData(int file) {
   if ( file == 9 ) dataFile = SD.open("9.txt", FILE_WRITE | O_TRUNC);
   if ( file == 10 ) dataFile = SD.open("10.txt", FILE_WRITE | O_TRUNC);
   if ( file == 11 ) dataFile = SD.open("11.txt", FILE_WRITE | O_TRUNC);
-  Serial.println("dataFile open");
-  Serial.println("started writing data");
+  if ( !dataFile ) {
+    Serial.println(F("->error opening data.txt"));
+    return false;
+  }
 
+  Serial.println(F("dataFile open"));
+  Serial.println(F("started writing data"));
+  return true;
 }
 
 void writeGesture(float xPos, float yPos) {
@@ -494,27 +886,35 @@ void writeAdjustment(String value) {
   }
 }
 
-void readInstruction() {
+boolean readInstruction() {
   String command;
   String value;
   String line;
-  if ( dataFile.available()) {
-    line = dataFile.readStringUntil('\n');
-    command = splitString(line, '\t', 0);
-    value = splitString(line, '\t', 1);
-    if ( command == "move" ) {
-      String stXPos = splitString(value, ',', 0);
-      String stYPos = splitString(value, ',', 1);
-      dataCommand = command;
-      dataXPos = stXPos.toFloat();
-      dataYPos = stYPos.toFloat();
-    } else {
-      dataValue = value;
-      dataValue.trim();
-      dataCommand = command;
-    }
+  dataCommand = "";
+  dataValue = "";
+  dataXPos = 0.0f;
+  dataYPos = 0.0f;
 
+  if ( !dataFile.available()) return false;
+
+  line = dataFile.readStringUntil('\n');
+  command = splitString(line, '\t', 0);
+  value = splitString(line, '\t', 1);
+  command.trim();
+  value.trim();
+
+  if ( command == "move" ) {
+    String stXPos = splitString(value, ',', 0);
+    String stYPos = splitString(value, ',', 1);
+    dataCommand = command;
+    dataXPos = stXPos.toFloat();
+    dataYPos = stYPos.toFloat();
+  } else {
+    dataValue = value;
+    dataCommand = command;
   }
+
+  return true;
 }
 
 void closeData() {

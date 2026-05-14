@@ -47,12 +47,49 @@ Machine geometry and calibration values are hard-coded in the main sketch, inclu
 This is a PlatformIO project.
 
 ```bash
-pio run
-pio run --target upload
-pio device monitor
+~/.platformio/penv/bin/pio run
+~/.platformio/penv/bin/pio run --target upload
+~/.platformio/penv/bin/pio device monitor
 ```
 
 If you do not have `pio` installed globally, use the PlatformIO extension in VS Code instead.
+
+The default monitor settings are configured in [platformio.ini](platformio.ini):
+
+- `9600` baud
+- local echo enabled
+- `LF` line endings so commands match the firmware parser
+- `send_on_enter` so pressing Enter sends the command
+
+## State Machine
+
+The firmware uses one top-level handler per machine state:
+
+- `idle`: manual control, file selection, and draw start
+- `drawing`: processes one SD instruction per main-loop iteration
+- `pausing`: paused drawing that can resume or abort
+- `aborting`: one-pass cleanup after abort, completion, or draw error
+- `launchpad`: post-home blinking state used after `resetHome`
+- `noSD`: degraded mode without an SD card, with periodic SD re-detection
+
+Allowed high-level transitions:
+
+- `setup -> noSD -> idle` when SD initialization succeeds
+- `idle -> drawing` via toggle or `drawFromFile,<file>`
+- `drawing -> pausing` via toggle or `pause`
+- `pausing -> drawing` via toggle or `continue`
+- `drawing|pausing -> aborting` via toggle or `abort`
+- `aborting -> idle` after file cleanup and any completion handling
+- `idle|noSD -> launchpad` via `resetHome`
+- `launchpad -> idle` via toggle 4
+- `noSD -> idle` when an SD card is detected later
+
+Behavioral notes:
+
+- Serial commands are parsed in one place and queued for the state handlers.
+- `drawing` no longer owns nested serial loops.
+- `abort` no longer reports completion or forces a return to origin.
+- `noSD` is recoverable; inserting an SD card later can move the machine back to `idle`.
 
 ## Serial Commands
 
@@ -65,14 +102,26 @@ move,<scan>,<feed>
 stepL,<amount>
 stepR,<amount>
 setSpeed,<delay>
+outlineCanvas
 returnToOrigin
 returnToHome
 resetHome
 position
 abort
+pause
+continue
+retrySD
 monitoring on
 monitoring off
 ```
+
+State-sensitive commands:
+
+- `drawFromFile,<file>` is only accepted from `idle` or `noSD`
+- `pause` is only accepted while `drawing`
+- `continue` is only accepted while `pausing`
+- `abort` is only accepted while `drawing` or `pausing`
+- manual commands such as `move`, `stepL`, `stepR`, `returnToOrigin`, and `position` are accepted in non-drawing states
 
 ## Notes
 
