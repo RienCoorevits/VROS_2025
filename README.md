@@ -2,6 +2,8 @@
 
 Firmware for a Mega 2560-based VROS drawing machine / hanging plotter.
 
+Primary project documentation lives in the Obsidian vault `VBOT Vault` at `~/Documents/VBOT BRAIN/VBOT Vault`; future agents working on this repository should use that vault as the main reference and keep it updated alongside code changes.
+
 ## Overview
 
 This project drives a two-motor carriage system using an Arduino Mega 2560. The firmware:
@@ -10,7 +12,6 @@ This project drives a two-motor carriage system using an Arduino Mega 2560. The 
 - stores and restores carriage position with EEPROM
 - reads drawing instructions from an SD card
 - accepts serial commands for movement, calibration, and drawing control
-- includes a built-in drawing library for generating patterns on the SD card
 
 The active PlatformIO environment is defined in [platformio.ini](platformio.ini) for `megaatmega2560`.
 
@@ -38,8 +39,7 @@ Machine geometry and calibration values are hard-coded in the main sketch, inclu
 - [`src/controller.ino`](src/controller.ino): serial command parser
 - [`src/movePenSegmented.ino`](src/movePenSegmented.ino): segmented motion algorithm
 - [`src/movePen.ino`](src/movePen.ino): alternate direct motion algorithm
-- [`src/drawingLibrary.ino`](src/drawingLibrary.ino): built-in pattern generators
-- [`src/shapes.ino`](src/shapes.ino): drawing primitives
+- [`src/shapes.ino`](src/shapes.ino): drawing primitives and geometry helpers used by shape-style paths
 - [`src/serialPlot.ino`](src/serialPlot.ino): serial plotting/debug helper
 - [`drawings/`](drawings): repo-local drawing files that can be streamed over serial
 - [`scripts/stream_drawing.py`](scripts/stream_drawing.py): host-side serial streaming tool
@@ -99,7 +99,6 @@ Examples of supported commands:
 
 ```text
 drawFromFile,<file>
-writeToFile,<drawing>,<file>
 move,<scan>,<feed>
 type,<absolute|relative>
 mode,<segmented|movePen>

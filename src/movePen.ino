@@ -57,14 +57,14 @@ void movePen(float xPos, float yPos) {
   //determine motor directions
 
   if ( a > 0) {
-    digitalWrite(DPL, HIGH);
+    digitalWrite(DIR_LEFT_PIN, HIGH);
   } else if ( a < 0) {
-    digitalWrite(DPL, LOW);
+    digitalWrite(DIR_LEFT_PIN, LOW);
   }
   if ( b > 0) {
-    digitalWrite(DPR, HIGH);
+    digitalWrite(DIR_RIGHT_PIN, HIGH);
   } else if ( b < 0) {
-    digitalWrite(DPR, LOW);
+    digitalWrite(DIR_RIGHT_PIN, LOW);
   }
 
   //determine amount of steps
@@ -114,15 +114,15 @@ void movePen(float xPos, float yPos) {
     for ( int x = 0; x < longestTravel; x++ ) {
     if (x % int(longestTravel / stepsLeft) == 0) {
       testSumLeft++;
-      digitalWrite(SPL, HIGH);
+      digitalWrite(STEP_LEFT_PIN, HIGH);
       delayMicroseconds(minStepperPulse);
-      digitalWrite(SPL, LOW);
+      digitalWrite(STEP_LEFT_PIN, LOW);
     }
     if (x % int(longestTravel / stepsRight) == 0) {
       testSumRight++;
-      digitalWrite(SPR, HIGH);
+      digitalWrite(STEP_RIGHT_PIN, HIGH);
       delayMicroseconds(minStepperPulse);
-      digitalWrite(SPR, LOW);
+      digitalWrite(STEP_RIGHT_PIN, LOW);
     }
     delayMicroseconds(minStepperDelay);
     }
@@ -137,16 +137,16 @@ void movePen(float xPos, float yPos) {
   for ( int x = 0; x < longestTravel + 1; x++ ) {
     if ( testSumLeft < int(x / ratioL)) {
       testSumLeft++;
-      digitalWrite(SPL, HIGH);
+      digitalWrite(STEP_LEFT_PIN, HIGH);
       delayMicroseconds(minStepperPulse);
-      digitalWrite(SPL, LOW);
+      digitalWrite(STEP_LEFT_PIN, LOW);
     }
 
     if ( testSumRight < int(x / ratioR)) {
       testSumRight++;
-      digitalWrite(SPR, HIGH);
+      digitalWrite(STEP_RIGHT_PIN, HIGH);
       delayMicroseconds(minStepperPulse);
-      digitalWrite(SPR, LOW);
+      digitalWrite(STEP_RIGHT_PIN, LOW);
     }
     delayMicroseconds(minStepperDelay);
   }

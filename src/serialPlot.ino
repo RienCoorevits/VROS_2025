@@ -48,12 +48,12 @@ void serialPlot(float xPos, float yPos) {
   //devide a gesture into segments by lineResolution
   //initialise segmentArrays
   for ( int i = 0; i < segmentLength; i++ ) {
-    scanSegment[i] = NULL;
-    feedSegment[i] = NULL;
-    directionA[i] = NULL;
-    directionB[i] = NULL;
-    motorRatioL[i] = NULL;
-    motorRatioR[i] = NULL;
+    scanSegment[i] = 0.0f;
+    feedSegment[i] = 0.0f;
+    directionA[i] = false;
+    directionB[i] = false;
+    motorRatioL[i] = 0.0f;
+    motorRatioR[i] = 0.0f;
   }
 
   //fill the segmentArrays

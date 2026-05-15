@@ -48,12 +48,12 @@ void movePenSegmented(float xPos, float yPos) {
   //devide a gesture into segments by lineResolution
   //initialise segmentArrays
   for ( int i = 0; i < segmentLength; i++ ) {
-    scanSegment[i] = NULL;
-    feedSegment[i] = NULL;
-    directionA[i] = NULL;
-    directionB[i] = NULL;
-    motorRatioL[i] = NULL;
-    motorRatioR[i] = NULL;
+    scanSegment[i] = 0.0f;
+    feedSegment[i] = 0.0f;
+    directionA[i] = false;
+    directionB[i] = false;
+    motorRatioL[i] = 0.0f;
+    motorRatioR[i] = 0.0f;
   }
 
   //fill the segmentArrays
@@ -330,14 +330,14 @@ void movePenSegmented(float xPos, float yPos) {
   long totalSumRight = 0;
   while ( scanSegment[i] || feedSegment[i] ) {
     if ( directionA[i] ) {
-      digitalWrite(DPL, HIGH);
+      digitalWrite(DIR_LEFT_PIN, HIGH);
     } else {
-      digitalWrite(DPL, LOW);
+      digitalWrite(DIR_LEFT_PIN, LOW);
     }
     if ( directionB[i] ) {
-      digitalWrite(DPR, HIGH);
+      digitalWrite(DIR_RIGHT_PIN, HIGH);
     } else {
-      digitalWrite(DPR, LOW);
+      digitalWrite(DIR_RIGHT_PIN, LOW);
     }
     int testSumLeft = 0;
     int testSumRight = 0;
@@ -345,15 +345,15 @@ void movePenSegmented(float xPos, float yPos) {
       for ( int x = 0; x < scanSegment[i] + 1; x++ ) {
         if ( testSumLeft < int(x / motorRatioL[i])) {
           testSumLeft++;
-          digitalWrite(SPL, HIGH);
+          digitalWrite(STEP_LEFT_PIN, HIGH);
           delayMicroseconds(minStepperPulse);
-          digitalWrite(SPL, LOW);
+          digitalWrite(STEP_LEFT_PIN, LOW);
         }
         if ( testSumRight < int(x / motorRatioR[i])) {
           testSumRight++;
-          digitalWrite(SPR, HIGH);
+          digitalWrite(STEP_RIGHT_PIN, HIGH);
           delayMicroseconds(minStepperPulse);
-          digitalWrite(SPR, LOW);
+          digitalWrite(STEP_RIGHT_PIN, LOW);
         }
         delayMicroseconds(minStepperDelay);
       }
@@ -361,15 +361,15 @@ void movePenSegmented(float xPos, float yPos) {
       for ( int x = 0; x < feedSegment[i] + 1; x++ ) {
         if ( testSumLeft < int(x / motorRatioL[i])) {
           testSumLeft++;
-          digitalWrite(SPL, HIGH);
+          digitalWrite(STEP_LEFT_PIN, HIGH);
           delayMicroseconds(minStepperPulse);
-          digitalWrite(SPL, LOW);
+          digitalWrite(STEP_LEFT_PIN, LOW);
         }
         if ( testSumRight < int(x / motorRatioR[i])) {
           testSumRight++;
-          digitalWrite(SPR, HIGH);
+          digitalWrite(STEP_RIGHT_PIN, HIGH);
           delayMicroseconds(minStepperPulse);
-          digitalWrite(SPR, LOW);
+          digitalWrite(STEP_RIGHT_PIN, LOW);
         }
         delayMicroseconds(minStepperDelay);
       }

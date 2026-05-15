@@ -9,13 +9,13 @@
 
 
 // pin definitions
-#define DPL 6
-#define SPL 7
-#define DPR 8
-#define SPR 9
+#define DIR_LEFT_PIN 6
+#define STEP_LEFT_PIN 7
+#define DIR_RIGHT_PIN 8
+#define STEP_RIGHT_PIN 9
 #define FAULTLEFT 0
 #define FAULTRIGHT 1
-#define M0 5
+#define MICROSTEP_PIN 5
 #define toggle1 26
 #define toggle2 28
 #define toggle3 22
@@ -108,7 +108,6 @@ enum DrawOutcome {drawNone, drawFinished, drawAborted, drawError};
 enum CommandType {
   cmdNone,
   cmdDrawFromFile,
-  cmdWriteToFile,
   cmdSetSpeed,
   cmdMove,
   cmdStreamMove,
@@ -183,14 +182,14 @@ void setup() {
   pinMode(LED4, OUTPUT);
 
   //setting up the steppers
-  pinMode(DPL, OUTPUT);
-  pinMode(SPL, OUTPUT);
-  pinMode(DPR, OUTPUT);
-  pinMode(SPR, OUTPUT);
+  pinMode(DIR_LEFT_PIN, OUTPUT);
+  pinMode(STEP_LEFT_PIN, OUTPUT);
+  pinMode(DIR_RIGHT_PIN, OUTPUT);
+  pinMode(STEP_RIGHT_PIN, OUTPUT);
 
   //setting up microstepping
-  pinMode(M0, OUTPUT);
-  digitalWrite(M0, HIGH);
+  pinMode(MICROSTEP_PIN, OUTPUT);
+  digitalWrite(MICROSTEP_PIN, HIGH);
 
   //testing if case is connected
   //we haven't found a good way yet to test this.
@@ -256,7 +255,6 @@ void setup() {
   }
 
   Serial.println(F(">drawFromFile, file"));
-  Serial.println(F(">writeAndPlot, drawing, file"));
   Serial.println(F(">abort"));
   Serial.println(F(">pause"));
   Serial.println(F(">continue"));
@@ -591,19 +589,6 @@ void handleIdleState() {
       return;
     }
 
-    if ( pendingCommand == cmdWriteToFile ) {
-      if ( !initialiseSDQuietly() ) {
-        Serial.println(F("SD unavailable"));
-        enterState(noSD);
-      } else if ( initialiseWriteData(int(pendingArgument2)) ) {
-        Serial.println(F("started writing"));
-        drawingLibrary(int(pendingArgument1));
-        closeData();
-      }
-      clearPendingCommand();
-      return;
-    }
-
     rejectPendingCommand();
     return;
   }
@@ -819,17 +804,6 @@ void handleNoSDState() {
       } else {
         clearPendingCommand();
       }
-      return;
-    }
-
-    if ( pendingCommand == cmdWriteToFile ) {
-      if ( initialiseSD() && initialiseWriteData(int(pendingArgument2)) ) {
-        Serial.println(F("started writing"));
-        drawingLibrary(int(pendingArgument1));
-        closeData();
-        enterState(idle);
-      }
-      clearPendingCommand();
       return;
     }
 
@@ -1251,28 +1225,28 @@ void printPosition() {
 
 void stepL(int amount) {
   if ( amount > 0) {
-    digitalWrite(DPL, HIGH);
+    digitalWrite(DIR_LEFT_PIN, HIGH);
   } else if ( amount < 0) {
-    digitalWrite(DPL, LOW);
+    digitalWrite(DIR_LEFT_PIN, LOW);
   }
   for ( int x = 0; x < abs(amount); x++ ) {
-    digitalWrite(SPL, HIGH);
+    digitalWrite(STEP_LEFT_PIN, HIGH);
     delayMicroseconds(minStepperDelay);
-    digitalWrite(SPL, LOW);
+    digitalWrite(STEP_LEFT_PIN, LOW);
     delayMicroseconds(minStepperDelay);
   }
 }
 
 void stepR(int amount) {
   if ( amount > 0) {
-    digitalWrite(DPR, HIGH);
+    digitalWrite(DIR_RIGHT_PIN, HIGH);
   } else if ( amount < 0) {
-    digitalWrite(DPR, LOW);
+    digitalWrite(DIR_RIGHT_PIN, LOW);
   }
   for ( int x = 0; x < abs(amount); x++ ) {
-    digitalWrite(SPR, HIGH);
+    digitalWrite(STEP_RIGHT_PIN, HIGH);
     delayMicroseconds(minStepperDelay);
-    digitalWrite(SPR, LOW);
+    digitalWrite(STEP_RIGHT_PIN, LOW);
     delayMicroseconds(minStepperDelay);
   }
 }

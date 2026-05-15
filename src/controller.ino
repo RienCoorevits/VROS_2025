@@ -62,9 +62,7 @@ void controller() {
   pendingArgument1 = pendingText1.toFloat();
   pendingArgument2 = pendingText2.toFloat();
 
-  if ( advCommand.equals("writeToFile") ) {
-    pendingCommand = cmdWriteToFile;
-  } else if ( advCommand.equals("drawFromFile") ) {
+  if ( advCommand.equals("drawFromFile") ) {
     pendingCommand = cmdDrawFromFile;
   } else if ( advCommand.equals("setSpeed") ) {
     pendingCommand = cmdSetSpeed;
