@@ -5,6 +5,7 @@
 void controller() {
   String command;
   String advCommand;
+  String rawValue;
   if ( !Serial.available() ) return;
 
   command = Serial.readStringUntil('\n');
@@ -12,13 +13,54 @@ void controller() {
   if ( !command.length() ) return;
 
   if ( hasPendingCommand ) {
-    Serial.println(F("busy: command dropped"));
+    Serial.println(F("error\tbusy: command dropped"));
+    return;
+  }
+
+  pendingArgument1 = 0.0f;
+  pendingArgument2 = 0.0f;
+  pendingText1 = "";
+  pendingText2 = "";
+
+  if ( command.indexOf('\t') >= 0 ) {
+    advCommand = splitString(command, '\t', 0);
+    rawValue = splitString(command, '\t', 1);
+    advCommand.trim();
+    rawValue.trim();
+    pendingText1 = rawValue;
+
+    if ( advCommand.equals("move") ) {
+      pendingText1 = splitString(rawValue, ',', 0);
+      pendingText2 = splitString(rawValue, ',', 1);
+      pendingText1.trim();
+      pendingText2.trim();
+      pendingArgument1 = pendingText1.toFloat();
+      pendingArgument2 = pendingText2.toFloat();
+      pendingCommand = cmdStreamMove;
+    } else if ( advCommand.equals("type") ) {
+      pendingCommand = cmdSetType;
+    } else if ( advCommand.equals("mode") ) {
+      pendingCommand = cmdSetMode;
+    } else if ( advCommand.equals("adjustment") ) {
+      pendingCommand = cmdSetAdjustment;
+    } else {
+      Serial.println(F("error\tInvalid command"));
+      clearPendingCommand();
+      return;
+    }
+
+    hasPendingCommand = true;
     return;
   }
 
   advCommand = splitString(command, ',', 0);
-  pendingArgument1 = splitString(command, ',', 1).toFloat();
-  pendingArgument2 = splitString(command, ',', 2).toFloat();
+  pendingText1 = splitString(command, ',', 1);
+  pendingText2 = splitString(command, ',', 2);
+  advCommand.trim();
+  pendingText1.trim();
+  pendingText2.trim();
+  pendingArgument1 = pendingText1.toFloat();
+  pendingArgument2 = pendingText2.toFloat();
 
   if ( advCommand.equals("writeToFile") ) {
     pendingCommand = cmdWriteToFile;
@@ -28,6 +70,12 @@ void controller() {
     pendingCommand = cmdSetSpeed;
   } else if ( advCommand.equals("move") ) {
     pendingCommand = cmdMove;
+  } else if ( advCommand.equals("type") ) {
+    pendingCommand = cmdSetType;
+  } else if ( advCommand.equals("mode") ) {
+    pendingCommand = cmdSetMode;
+  } else if ( advCommand.equals("adjustment") ) {
+    pendingCommand = cmdSetAdjustment;
   } else if ( advCommand.equals("stepL") ) {
     pendingCommand = cmdStepL;
   } else if ( advCommand.equals("stepR") ) {
@@ -57,7 +105,7 @@ void controller() {
   } else if ( command.equals("retrySD") ) {
     pendingCommand = cmdRetrySD;
   } else {
-    Serial.println(F("Invalid command"));
+    Serial.println(F("error\tInvalid command"));
     clearPendingCommand();
     return;
   }

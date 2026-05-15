@@ -41,6 +41,8 @@ Machine geometry and calibration values are hard-coded in the main sketch, inclu
 - [`src/drawingLibrary.ino`](src/drawingLibrary.ino): built-in pattern generators
 - [`src/shapes.ino`](src/shapes.ino): drawing primitives
 - [`src/serialPlot.ino`](src/serialPlot.ino): serial plotting/debug helper
+- [`drawings/`](drawings): repo-local drawing files that can be streamed over serial
+- [`scripts/stream_drawing.py`](scripts/stream_drawing.py): host-side serial streaming tool
 
 ## Build And Upload
 
@@ -56,7 +58,7 @@ If you do not have `pio` installed globally, use the PlatformIO extension in VS 
 
 The default monitor settings are configured in [platformio.ini](platformio.ini):
 
-- `9600` baud
+- `115200` baud
 - local echo enabled
 - `LF` line endings so commands match the firmware parser
 - `send_on_enter` so pressing Enter sends the command
@@ -99,6 +101,9 @@ Examples of supported commands:
 drawFromFile,<file>
 writeToFile,<drawing>,<file>
 move,<scan>,<feed>
+type,<absolute|relative>
+mode,<segmented|movePen>
+adjustment,<none|largeSin|complexSin|noise>
 stepL,<amount>
 stepR,<amount>
 setSpeed,<delay>
@@ -122,6 +127,62 @@ State-sensitive commands:
 - `continue` is only accepted while `pausing`
 - `abort` is only accepted while `drawing` or `pausing`
 - manual commands such as `move`, `stepL`, `stepR`, `returnToOrigin`, and `position` are accepted in non-drawing states
+
+## Streaming Drawings From The Repo
+
+You can keep drawing files in [`drawings/`](drawings) and stream them directly over serial without an SD card.
+
+The recommended file format matches the SD instruction format:
+
+```text
+type	absolute
+mode	segmented
+adjustment	none
+move	21,31
+move	25,31
+move	25,35
+move	21,35
+move	21,31
+```
+
+Use the host-side streamer:
+
+```bash
+~/.platformio/penv/bin/python scripts/stream_drawing.py drawings/example.txt --port /dev/cu.usbmodem14401
+```
+
+How it works:
+
+- the script opens the serial port, waits for the board to boot, and sends one drawing instruction at a time
+- the firmware accepts streamed `move`, `type`, `mode`, and `adjustment` instructions over serial
+- after each instruction completes, the firmware replies with `ok`
+- the script waits for `ok` before sending the next instruction, so long moves do not overflow the serial buffer
+
+Optional:
+
+- add `--return-to-origin` to send `returnToOrigin` after the streamed file finishes
+- add `--repeat 20` to run the same drawing twenty times in a row
+- lines starting with `#` and blank lines are ignored by the script
+
+## Interactive Serial Console
+
+If you want a serial-console workflow instead of calling the one-shot streamer directly, use:
+
+```bash
+~/.platformio/penv/bin/python scripts/serial_console.py --port /dev/cu.usbmodem14401
+```
+
+Inside that console:
+
+- type normal firmware commands such as `position`, `returnToOrigin`, or `drawFromFile,3`
+- type `drawFromStream,drawing.txt` to stream [`drawings/drawing.txt`](drawings/drawing.txt)
+- type `drawFromStream,drawing.txt,20` to repeat the same repo-local drawing twenty times
+
+Important limitation:
+
+- `drawFromFile,...` is handled by the Arduino and reads from the SD card
+- `drawFromStream,...` is handled by the host console and reads from the repo `drawings/` folder
+- the Arduino firmware cannot directly open files from your computer, so `drawFromStream` must stay a host-side command
 
 ## Notes
 

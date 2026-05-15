@@ -1,0 +1,8 @@
+type	absolute
+mode	segmented
+adjustment	none
+move	21,31
+move	25,31
+move	25,35
+move	21,35
+move	21,31

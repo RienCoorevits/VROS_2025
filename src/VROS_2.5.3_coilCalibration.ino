@@ -111,8 +111,12 @@ enum CommandType {
   cmdWriteToFile,
   cmdSetSpeed,
   cmdMove,
+  cmdStreamMove,
   cmdStepL,
   cmdStepR,
+  cmdSetType,
+  cmdSetMode,
+  cmdSetAdjustment,
   cmdOutlineCanvas,
   cmdReturnToOrigin,
   cmdReturnToHome,
@@ -132,8 +136,16 @@ DrawOutcome drawOutcome = drawNone;
 CommandType pendingCommand = cmdNone;
 float pendingArgument1 = 0.0f;
 float pendingArgument2 = 0.0f;
+String pendingText1 = "";
+String pendingText2 = "";
 boolean hasPendingCommand = false;
 boolean drawingFileOpen = false;
+const int streamMoveQueueCapacity = 12;
+float streamMoveQueueScan[streamMoveQueueCapacity];
+float streamMoveQueueFeed[streamMoveQueueCapacity];
+int streamMoveQueueHead = 0;
+int streamMoveQueueTail = 0;
+int streamMoveQueueCount = 0;
 int loopCounter = 0;
 int cycleLength = 2000;
 unsigned long lastSDRetryAt = 0;
@@ -187,7 +199,7 @@ void setup() {
   stepLength = 1 / stepsToCm;
 
 
-  Serial.begin(9600);
+  Serial.begin(115200);
   Serial.println(F("_____________________________________"));
   Serial.println(F("VROS_2.5.1_caseController"));
   Serial.println(F("_____________________________________"));
@@ -329,13 +341,57 @@ void clearPendingCommand() {
   pendingCommand = cmdNone;
   pendingArgument1 = 0.0f;
   pendingArgument2 = 0.0f;
+  pendingText1 = "";
+  pendingText2 = "";
   hasPendingCommand = false;
 }
 
-void rejectPendingCommand() {
-  Serial.print(F("command unavailable in state "));
-  Serial.println(getStateName(machineState));
+boolean hasQueuedStreamMove() {
+  return streamMoveQueueCount > 0;
+}
+
+boolean enqueueStreamMove(float scanPos, float feedPos) {
+  if ( streamMoveQueueCount >= streamMoveQueueCapacity ) return false;
+
+  streamMoveQueueScan[streamMoveQueueTail] = scanPos;
+  streamMoveQueueFeed[streamMoveQueueTail] = feedPos;
+  streamMoveQueueTail = (streamMoveQueueTail + 1) % streamMoveQueueCapacity;
+  streamMoveQueueCount++;
+  return true;
+}
+
+boolean popQueuedStreamMove(float& scanPos, float& feedPos) {
+  if ( !hasQueuedStreamMove() ) return false;
+
+  scanPos = streamMoveQueueScan[streamMoveQueueHead];
+  feedPos = streamMoveQueueFeed[streamMoveQueueHead];
+  streamMoveQueueHead = (streamMoveQueueHead + 1) % streamMoveQueueCapacity;
+  streamMoveQueueCount--;
+  return true;
+}
+
+boolean executeNextQueuedStreamMove() {
+  float scanPos;
+  float feedPos;
+  if ( !popQueuedStreamMove(scanPos, feedPos) ) return false;
+
+  gesture(scanPos, feedPos);
+  return true;
+}
+
+void finishPendingCommand() {
+  Serial.println(F("ok"));
   clearPendingCommand();
+}
+
+void failPendingCommand(const String& message) {
+  Serial.print(F("error\t"));
+  Serial.println(message);
+  clearPendingCommand();
+}
+
+void rejectPendingCommand() {
+  failPendingCommand(String(F("command unavailable in state ")) + getStateName(machineState));
 }
 
 boolean handleSharedCommand() {
@@ -347,29 +403,29 @@ boolean handleSharedCommand() {
       minStepperPulse = int(pendingArgument1);
       Serial.print(F("speed set at\t"));
       Serial.println(int(pendingArgument1));
-      clearPendingCommand();
+      finishPendingCommand();
       return true;
 
     case cmdMonitoringOn:
       monitoring = true;
       Serial.println(F("monitoring on"));
-      clearPendingCommand();
+      finishPendingCommand();
       return true;
 
     case cmdMonitoringOff:
       monitoring = false;
       Serial.println(F("monitoring off"));
-      clearPendingCommand();
+      finishPendingCommand();
       return true;
 
     case cmdPosition:
       printPosition();
-      clearPendingCommand();
+      finishPendingCommand();
       return true;
 
     case cmdTerminate:
       terminate();
-      clearPendingCommand();
+      finishPendingCommand();
       return true;
 
     default:
@@ -389,21 +445,62 @@ boolean handleManualMotionCommand() {
       Serial.println(pendingArgument2);
       gesture(pendingArgument1, pendingArgument2);
       printPosition();
-      clearPendingCommand();
+      finishPendingCommand();
+      return true;
+
+    case cmdStreamMove:
+      if ( enqueueStreamMove(pendingArgument1, pendingArgument2) ) {
+        finishPendingCommand();
+        return true;
+      }
+
+      if ( executeNextQueuedStreamMove() && enqueueStreamMove(pendingArgument1, pendingArgument2) ) {
+        finishPendingCommand();
+        return true;
+      }
+
+      failPendingCommand(F("stream move queue stalled"));
       return true;
 
     case cmdStepL:
       Serial.print(F("stepping left motor: "));
       Serial.println(int(pendingArgument1));
       stepL(int(pendingArgument1));
-      clearPendingCommand();
+      finishPendingCommand();
       return true;
 
     case cmdStepR:
       Serial.print(F("stepping right motor: "));
       Serial.println(int(pendingArgument1));
       stepR(int(pendingArgument1));
-      clearPendingCommand();
+      finishPendingCommand();
+      return true;
+
+    case cmdSetType:
+      if ( hasQueuedStreamMove() ) {
+        failPendingCommand(F("stream move queue not empty"));
+        return true;
+      }
+      type = pendingText1;
+      finishPendingCommand();
+      return true;
+
+    case cmdSetMode:
+      if ( hasQueuedStreamMove() ) {
+        failPendingCommand(F("stream move queue not empty"));
+        return true;
+      }
+      mode = pendingText1;
+      finishPendingCommand();
+      return true;
+
+    case cmdSetAdjustment:
+      if ( hasQueuedStreamMove() ) {
+        failPendingCommand(F("stream move queue not empty"));
+        return true;
+      }
+      adjustmentType = pendingText1;
+      finishPendingCommand();
       return true;
 
     case cmdOutlineCanvas:
@@ -426,23 +523,23 @@ boolean handleManualMotionCommand() {
       }
       printPosition();
       Serial.println(F("done"));
-      clearPendingCommand();
+      finishPendingCommand();
       return true;
 
     case cmdReturnToOrigin:
       returnToOrigin();
-      clearPendingCommand();
+      finishPendingCommand();
       return true;
 
     case cmdReturnToHome:
       returnToHome();
-      clearPendingCommand();
+      finishPendingCommand();
       return true;
 
     case cmdResetHome:
       resetHome();
       enterState(launchpad);
-      clearPendingCommand();
+      finishPendingCommand();
       return true;
 
     default:
@@ -510,6 +607,8 @@ void handleIdleState() {
     rejectPendingCommand();
     return;
   }
+
+  if ( executeNextQueuedStreamMove() ) return;
 
   if ( digitalRead(toggle1) == LOW ) {
     if ( initialiseSDQuietly() ) {
@@ -638,6 +737,9 @@ void handleAbortingState() {
     Serial.println(F("closing dataFile"));
   }
   drawingFileOpen = false;
+  streamMoveQueueHead = 0;
+  streamMoveQueueTail = 0;
+  streamMoveQueueCount = 0;
 
   if ( drawOutcome == drawFinished ) {
     Serial.println(F("drawing complete"));
@@ -674,6 +776,8 @@ void handleLaunchpadState() {
     rejectPendingCommand();
     return;
   }
+
+  if ( executeNextQueuedStreamMove() ) return;
 
   if ( digitalRead(toggle4) == LOW ) {
     returnToOrigin();
@@ -732,6 +836,8 @@ void handleNoSDState() {
     rejectPendingCommand();
     return;
   }
+
+  if ( executeNextQueuedStreamMove() ) return;
 
   if ( digitalRead(toggle3) == LOW ) {
     resetHome();
