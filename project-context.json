@@ -1,0 +1,35 @@
+{
+  "project_name": "VROS",
+  "role": "firmware",
+  "repository_path": "/Users/u0127995/Documents/PlatformIO/Projects/260511-111720-megaatmega2560",
+  "primary_docs_vault": "/Users/u0127995/Documents/VBOT BRAIN/VBOT Vault",
+  "vault_home_note": "Welcome.md",
+  "related_repositories": [
+    {
+      "name": "firmware",
+      "path": "/Users/u0127995/Documents/PlatformIO/Projects/260511-111720-megaatmega2560"
+    },
+    {
+      "name": "control-station",
+      "path": "/Users/u0127995/Documents/Developer/VROS Control Station"
+    }
+  ],
+  "preferred_entry_notes": [
+    "Welcome.md",
+    "Project Overview.md",
+    "Firmware Architecture.md",
+    "Serial And Drawing Workflow.md",
+    "Progress Logbook/2026-05-15.md"
+  ],
+  "preferred_local_files": [
+    "README.md",
+    "platformio.ini",
+    "src/VROS_2.5.3_coilCalibration.ino",
+    "src/controller.ino"
+  ],
+  "verification_commands": [
+    "obsidian vault='VBOT Vault' read path='Welcome.md'",
+    "sed -n '1,160p' README.md",
+    "sed -n '1,220p' src/controller.ino"
+  ]
+}

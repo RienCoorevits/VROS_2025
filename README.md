@@ -4,6 +4,8 @@ Firmware for a Mega 2560-based VROS drawing machine / hanging plotter.
 
 Primary project documentation lives in the Obsidian vault `VBOT Vault` at `~/Documents/VBOT BRAIN/VBOT Vault`; future agents working on this repository should use that vault as the main reference and keep it updated alongside code changes.
 
+Workspace mapping for future agents lives in [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) and [`project-context.json`](project-context.json).
+
 ## Overview
 
 This project drives a two-motor carriage system using an Arduino Mega 2560. The firmware:
