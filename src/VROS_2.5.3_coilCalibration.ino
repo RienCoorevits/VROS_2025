@@ -7,6 +7,10 @@
 // heightmaps
 //https://tangrams.github.io/heightmapper
 
+const char FIRMWARE_PRODUCT_NAME[] = "VROS_caseController";
+const char FIRMWARE_SEMVER[] = "2.5.4";
+const char FIRMWARE_COMPAT_ID[] = "VROS_2.5.4_caseController";
+
 
 // pin definitions
 #define DIR_LEFT_PIN 6
@@ -31,30 +35,69 @@ int rotary2;
 
 //Physical vars, all in cm
 
-/*
-  //Prototype Robot
-  const float motorDistance = 57.00f; // previously 57.00
-  const float scanOffset = 5.00f;//11.00f; //10.00 + 1.00 spool offset
-  const float feedOffset = 15.50f; //15.50f; //15.00 + 1.00 spool offset
-  const float width = motorDistance - scanOffset * 2;
-  const float height = 50.00f;
-  const float lineResolution = 0.50f;
-  const float homePosition = 91.7;
-  const float leftCoilFeed = 1.00;
-  const float rightCoilFeed = 1.00;
-*/
+struct RobotSetupPayload {
+  float motorDistance;
+  float scanOffset;
+  float feedOffset;
+  float height;
+  float lineResolution;
+  float homePosition;
+  float leftCoilFeed;
+  float rightCoilFeed;
+  float stepsToCm;
+};
 
-//Black robot
-const float motorDistance = 62.00f; //63
-const float scanOffset = 10.00f;
-const float feedOffset = 20.00f;
-const float width = motorDistance - scanOffset * 2;
-const float height = 50.00f;
-const float lineResolution = 0.50f;
-const float homePosition = 82.00f;//81.1;
-const float leftCoilFeed = 1.00;
-const float rightCoilFeed = 0.997;
-float stepsToCm = 35.00f;//33.58f;
+struct RobotSetupBlock {
+  unsigned long magic;
+  byte version;
+  byte payloadSize;
+  unsigned int flags;
+  unsigned long crc32;
+  RobotSetupPayload payload;
+  byte reserved[16];
+};
+
+struct PositionBlock {
+  unsigned long magic;
+  long scanX100;
+  long feedX100;
+  unsigned long crc32;
+};
+
+const unsigned long ROBOT_SETUP_MAGIC = 0x56525331UL;
+const byte ROBOT_SETUP_VERSION = 1;
+const int ROBOT_SETUP_EEPROM_ADDRESS = 0;
+const unsigned long POSITION_MAGIC = 0x504F5331UL;
+const int POSITION_EEPROM_ADDRESS = 64;
+const int LEGACY_FEED_EEPROM_ADDRESS = 0;
+const int LEGACY_SCAN_EEPROM_ADDRESS = 15;
+
+const RobotSetupPayload DEFAULT_ROBOT_SETUP = {
+  62.00f,
+  10.00f,
+  20.00f,
+  50.00f,
+  0.50f,
+  82.00f,
+  1.00f,
+  0.997f,
+  35.00f
+};
+
+RobotSetupPayload robotSetup = DEFAULT_ROBOT_SETUP;
+boolean robotSetupEEPROMValid = false;
+
+float motorDistance = DEFAULT_ROBOT_SETUP.motorDistance;
+float scanOffset = DEFAULT_ROBOT_SETUP.scanOffset;
+float feedOffset = DEFAULT_ROBOT_SETUP.feedOffset;
+float width = DEFAULT_ROBOT_SETUP.motorDistance - DEFAULT_ROBOT_SETUP.scanOffset * 2;
+float height = DEFAULT_ROBOT_SETUP.height;
+float lineResolution = DEFAULT_ROBOT_SETUP.lineResolution;
+float homePosition = DEFAULT_ROBOT_SETUP.homePosition;
+float leftCoilFeed = DEFAULT_ROBOT_SETUP.leftCoilFeed;
+float rightCoilFeed = DEFAULT_ROBOT_SETUP.rightCoilFeed;
+float stepsToCmBase = DEFAULT_ROBOT_SETUP.stepsToCm;
+float stepsToCm = DEFAULT_ROBOT_SETUP.stepsToCm;
 
 boolean detectCase = false;
 
@@ -127,7 +170,12 @@ enum CommandType {
   cmdPause,
   cmdContinue,
   cmdPosition,
-  cmdRetrySD
+  cmdRetrySD,
+  cmdRobotSetupGet,
+  cmdRobotSetupWrite,
+  cmdRobotSetupLoad,
+  cmdRobotSetupDefaults,
+  cmdClearEEPROM
 };
 
 MachineState machineState = idle;
@@ -145,6 +193,7 @@ float streamMoveQueueFeed[streamMoveQueueCapacity];
 int streamMoveQueueHead = 0;
 int streamMoveQueueTail = 0;
 int streamMoveQueueCount = 0;
+boolean streamMoveQueuePaused = false;
 int loopCounter = 0;
 int cycleLength = 2000;
 unsigned long lastSDRetryAt = 0;
@@ -164,6 +213,196 @@ boolean leftBound = true;
 boolean rightBound = true;
 String adjustmentType = "none";
 float microstepResolution = 0.0625;
+
+unsigned long crc32Update(unsigned long crc, const byte* data, unsigned int length) {
+  crc = ~crc;
+  for ( unsigned int index = 0; index < length; index++ ) {
+    crc ^= data[index];
+    for ( byte bit = 0; bit < 8; bit++ ) {
+      if ( crc & 1UL ) {
+        crc = (crc >> 1) ^ 0xEDB88320UL;
+      } else {
+        crc >>= 1;
+      }
+    }
+  }
+  return ~crc;
+}
+
+unsigned long calculateRobotSetupCRC(const RobotSetupPayload& payload) {
+  return crc32Update(0UL, (const byte*)&payload, sizeof(RobotSetupPayload));
+}
+
+unsigned long calculatePositionCRC(long scanX100Value, long feedX100Value) {
+  unsigned long crc = 0UL;
+  crc = crc32Update(crc, (const byte*)&scanX100Value, sizeof(long));
+  crc = crc32Update(crc, (const byte*)&feedX100Value, sizeof(long));
+  return crc;
+}
+
+boolean validFloatRange(float value, float minValue, float maxValue) {
+  return value >= minValue && value <= maxValue;
+}
+
+boolean validateRobotSetup(const RobotSetupPayload& payload) {
+  float computedWidth = payload.motorDistance - payload.scanOffset * 2.0f;
+  if ( !validFloatRange(payload.motorDistance, 1.0f, 500.0f) ) return false;
+  if ( !validFloatRange(payload.scanOffset, 0.0f, 200.0f) ) return false;
+  if ( !validFloatRange(payload.feedOffset, 0.0f, 200.0f) ) return false;
+  if ( !validFloatRange(payload.height, 1.0f, 500.0f) ) return false;
+  if ( !validFloatRange(payload.lineResolution, 0.01f, 20.0f) ) return false;
+  if ( !validFloatRange(payload.homePosition, 0.0f, 500.0f) ) return false;
+  if ( !validFloatRange(payload.leftCoilFeed, 0.5f, 1.5f) ) return false;
+  if ( !validFloatRange(payload.rightCoilFeed, 0.5f, 1.5f) ) return false;
+  if ( !validFloatRange(payload.stepsToCm, 1.0f, 5000.0f) ) return false;
+  if ( computedWidth <= 0.0f ) return false;
+  return true;
+}
+
+void applyRobotSetup(const RobotSetupPayload& payload) {
+  robotSetup = payload;
+  motorDistance = robotSetup.motorDistance;
+  scanOffset = robotSetup.scanOffset;
+  feedOffset = robotSetup.feedOffset;
+  width = motorDistance - scanOffset * 2.0f;
+  height = robotSetup.height;
+  lineResolution = robotSetup.lineResolution;
+  homePosition = robotSetup.homePosition;
+  leftCoilFeed = robotSetup.leftCoilFeed;
+  rightCoilFeed = robotSetup.rightCoilFeed;
+  stepsToCmBase = robotSetup.stepsToCm;
+  stepsToCm = stepsToCmBase / microstepResolution;
+  stepLength = 1.0f / stepsToCm;
+}
+
+void applyDefaultRobotSetup() {
+  applyRobotSetup(DEFAULT_ROBOT_SETUP);
+}
+
+boolean loadRobotSetupFromEEPROM() {
+  RobotSetupBlock block;
+  EEPROM.get(ROBOT_SETUP_EEPROM_ADDRESS, block);
+  if ( block.magic != ROBOT_SETUP_MAGIC ) return false;
+  if ( block.version != ROBOT_SETUP_VERSION ) return false;
+  if ( block.payloadSize != sizeof(RobotSetupPayload) ) return false;
+  if ( block.crc32 != calculateRobotSetupCRC(block.payload) ) return false;
+  if ( !validateRobotSetup(block.payload) ) return false;
+
+  applyRobotSetup(block.payload);
+  return true;
+}
+
+void saveRobotSetupToEEPROM() {
+  RobotSetupBlock block;
+  block.magic = ROBOT_SETUP_MAGIC;
+  block.version = ROBOT_SETUP_VERSION;
+  block.payloadSize = sizeof(RobotSetupPayload);
+  block.flags = 0;
+  block.payload = robotSetup;
+  block.crc32 = calculateRobotSetupCRC(block.payload);
+  for ( byte index = 0; index < sizeof(block.reserved); index++ ) {
+    block.reserved[index] = 0;
+  }
+  EEPROM.put(ROBOT_SETUP_EEPROM_ADDRESS, block);
+}
+
+boolean loadLegacyPositionFromEEPROM() {
+  long legacyFeed = 0;
+  long legacyScan = 0;
+  EEPROM.get(LEGACY_FEED_EEPROM_ADDRESS, legacyFeed);
+  EEPROM.get(LEGACY_SCAN_EEPROM_ADDRESS, legacyScan);
+
+  if ( legacyFeed == -1L && legacyScan == -1L ) return false;
+  if ( legacyScan < -50000L || legacyScan > 50000L ) return false;
+  if ( legacyFeed < -50000L || legacyFeed > 50000L ) return false;
+
+  scan = float(legacyScan) / 100.0f;
+  feed = float(legacyFeed) / 100.0f;
+  return true;
+}
+
+boolean loadPositionFromEEPROM() {
+  PositionBlock block;
+  EEPROM.get(POSITION_EEPROM_ADDRESS, block);
+  if (
+    block.magic == POSITION_MAGIC
+    && block.crc32 == calculatePositionCRC(block.scanX100, block.feedX100)
+  ) {
+    scan = float(block.scanX100) / 100.0f;
+    feed = float(block.feedX100) / 100.0f;
+    return true;
+  }
+
+  if ( loadLegacyPositionFromEEPROM() ) {
+    savePositionToEEPROM();
+    return true;
+  }
+
+  scan = 0.0f;
+  feed = 0.0f;
+  return false;
+}
+
+void savePositionToEEPROM() {
+  PositionBlock block;
+  block.magic = POSITION_MAGIC;
+  block.scanX100 = long(scan * 100.0f);
+  block.feedX100 = long(feed * 100.0f);
+  block.crc32 = calculatePositionCRC(block.scanX100, block.feedX100);
+  EEPROM.put(POSITION_EEPROM_ADDRESS, block);
+}
+
+void clearAllEEPROM() {
+  for ( unsigned int address = 0; address < EEPROM.length(); address++ ) {
+    EEPROM.update(address, 0xFF);
+  }
+}
+
+void printRobotSetup() {
+  Serial.print(F("robotSetupStatus\t"));
+  Serial.println(robotSetupEEPROMValid ? F("valid") : F("invalid"));
+  Serial.print(F("robotSetup\tmotorDistance\t"));
+  Serial.println(motorDistance, 4);
+  Serial.print(F("robotSetup\tscanOffset\t"));
+  Serial.println(scanOffset, 4);
+  Serial.print(F("robotSetup\tfeedOffset\t"));
+  Serial.println(feedOffset, 4);
+  Serial.print(F("robotSetup\twidth\t"));
+  Serial.println(width, 4);
+  Serial.print(F("robotSetup\theight\t"));
+  Serial.println(height, 4);
+  Serial.print(F("robotSetup\tlineResolution\t"));
+  Serial.println(lineResolution, 4);
+  Serial.print(F("robotSetup\thomePosition\t"));
+  Serial.println(homePosition, 4);
+  Serial.print(F("robotSetup\tleftCoilFeed\t"));
+  Serial.println(leftCoilFeed, 4);
+  Serial.print(F("robotSetup\trightCoilFeed\t"));
+  Serial.println(rightCoilFeed, 4);
+  Serial.print(F("robotSetup\tstepsToCm\t"));
+  Serial.println(stepsToCmBase, 4);
+}
+
+boolean parseRobotSetupWritePayload(const String& rawValue, RobotSetupPayload& payload) {
+  String values[9];
+  for ( int index = 0; index < 9; index++ ) {
+    values[index] = splitString(rawValue, ',', index);
+    values[index].trim();
+    if ( !values[index].length() ) return false;
+  }
+
+  payload.motorDistance = values[0].toFloat();
+  payload.scanOffset = values[1].toFloat();
+  payload.feedOffset = values[2].toFloat();
+  payload.height = values[3].toFloat();
+  payload.lineResolution = values[4].toFloat();
+  payload.homePosition = values[5].toFloat();
+  payload.leftCoilFeed = values[6].toFloat();
+  payload.rightCoilFeed = values[7].toFloat();
+  payload.stepsToCm = values[8].toFloat();
+
+  return validateRobotSetup(payload);
+}
 
 
 ///////////////////////////////////////////////////
@@ -194,13 +433,19 @@ void setup() {
   //testing if case is connected
   //we haven't found a good way yet to test this.
 
-  stepsToCm = stepsToCm / microstepResolution;
-  stepLength = 1 / stepsToCm;
+  robotSetupEEPROMValid = loadRobotSetupFromEEPROM();
+  if ( !robotSetupEEPROMValid ) {
+    applyDefaultRobotSetup();
+  }
+
+  if ( !loadPositionFromEEPROM() ) {
+    savePositionToEEPROM();
+  }
 
 
   Serial.begin(115200);
   Serial.println(F("_____________________________________"));
-  Serial.println(F("VROS_2.5.1_caseController"));
+  Serial.println(FIRMWARE_COMPAT_ID);
   Serial.println(F("_____________________________________"));
 
   Serial.println(F("_____________________________________"));
@@ -227,14 +472,12 @@ void setup() {
   Serial.print(F("stepperDelay:\t"));
   Serial.println(minStepperDelay);
   Serial.println("");
+  printRobotSetup();
+  Serial.println("");
 
 
   Serial.println(F("_____________________________________"));
   Serial.println(F("reading EEPROM"));
-  EEPROM.get(0, feedINT);
-  EEPROM.get(15, scanINT);
-  feed = float(feedINT) / 100;
-  scan = float(scanINT) / 100;
   Serial.print(scan);
   Serial.print(",");
   Serial.println(feed);
@@ -267,6 +510,10 @@ void setup() {
   Serial.println(F(">resetHome"));
   Serial.println(F(">returnToHome"));
   Serial.println(F(">position"));
+  Serial.println(F(">robotSetupGet"));
+  Serial.println(F(">robotSetupWrite\\t62,10,20,50,0.5,82,1,0.997,35"));
+  Serial.println(F(">robotSetupDefaults"));
+  Serial.println(F(">clearEEPROM"));
 }
 
 void loop() {
@@ -328,6 +575,7 @@ void enterState(MachineState nextState) {
   if ( machineState == drawing ) {
     drawOutcome = drawNone;
     drawingFileOpen = false;
+    streamMoveQueuePaused = false;
   } else if ( machineState == aborting && drawOutcome == drawNone ) {
     drawOutcome = drawAborted;
   } else if ( machineState == noSD ) {
@@ -346,6 +594,10 @@ void clearPendingCommand() {
 
 boolean hasQueuedStreamMove() {
   return streamMoveQueueCount > 0;
+}
+
+boolean streamQueueActive() {
+  return streamMoveQueuePaused || hasQueuedStreamMove();
 }
 
 boolean enqueueStreamMove(float scanPos, float feedPos) {
@@ -418,6 +670,19 @@ boolean handleSharedCommand() {
 
     case cmdPosition:
       printPosition();
+      finishPendingCommand();
+      return true;
+
+    case cmdRobotSetupGet:
+      printRobotSetup();
+      finishPendingCommand();
+      return true;
+
+    case cmdClearEEPROM:
+      clearAllEEPROM();
+      robotSetupEEPROMValid = false;
+      Serial.println(F("eeprom cleared"));
+      printRobotSetup();
       finishPendingCommand();
       return true;
 
@@ -540,6 +805,56 @@ boolean handleManualMotionCommand() {
       finishPendingCommand();
       return true;
 
+    case cmdPause:
+      streamMoveQueuePaused = true;
+      Serial.println(F("stream queue paused"));
+      finishPendingCommand();
+      return true;
+
+    case cmdContinue:
+      streamMoveQueuePaused = false;
+      Serial.println(F("stream queue resumed"));
+      finishPendingCommand();
+      return true;
+
+    case cmdRobotSetupWrite: {
+      RobotSetupPayload payload;
+      if ( !parseRobotSetupWritePayload(pendingText1, payload) ) {
+        failPendingCommand(F("invalid robot setup payload"));
+        return true;
+      }
+      applyRobotSetup(payload);
+      saveRobotSetupToEEPROM();
+      robotSetupEEPROMValid = true;
+      currentA = getA(scan, feed);
+      currentB = getB(scan, feed);
+      printRobotSetup();
+      printPosition();
+      finishPendingCommand();
+      return true;
+    }
+
+    case cmdRobotSetupLoad:
+      robotSetupEEPROMValid = loadRobotSetupFromEEPROM();
+      if ( !robotSetupEEPROMValid ) applyDefaultRobotSetup();
+      currentA = getA(scan, feed);
+      currentB = getB(scan, feed);
+      printRobotSetup();
+      printPosition();
+      finishPendingCommand();
+      return true;
+
+    case cmdRobotSetupDefaults:
+      applyDefaultRobotSetup();
+      saveRobotSetupToEEPROM();
+      robotSetupEEPROMValid = true;
+      currentA = getA(scan, feed);
+      currentB = getB(scan, feed);
+      printRobotSetup();
+      printPosition();
+      finishPendingCommand();
+      return true;
+
     default:
       return false;
   }
@@ -578,6 +893,10 @@ void handleIdleState() {
 
   if ( hasPendingCommand ) {
     if ( pendingCommand == cmdDrawFromFile ) {
+      if ( streamQueueActive() ) {
+        failPendingCommand(F("stream move queue not empty"));
+        return;
+      }
       if ( !initialiseSDQuietly() ) {
         Serial.println(F("SD unavailable"));
         enterState(noSD);
@@ -593,9 +912,10 @@ void handleIdleState() {
     return;
   }
 
-  if ( executeNextQueuedStreamMove() ) return;
+  if ( !streamMoveQueuePaused && executeNextQueuedStreamMove() ) return;
 
   if ( digitalRead(toggle1) == LOW ) {
+    if ( streamQueueActive() ) return;
     if ( initialiseSDQuietly() ) {
       enterState(drawing);
     } else {
@@ -725,6 +1045,7 @@ void handleAbortingState() {
   streamMoveQueueHead = 0;
   streamMoveQueueTail = 0;
   streamMoveQueueCount = 0;
+  streamMoveQueuePaused = false;
 
   if ( drawOutcome == drawFinished ) {
     Serial.println(F("drawing complete"));
@@ -762,7 +1083,7 @@ void handleLaunchpadState() {
     return;
   }
 
-  if ( executeNextQueuedStreamMove() ) return;
+  if ( !streamMoveQueuePaused && executeNextQueuedStreamMove() ) return;
 
   if ( digitalRead(toggle4) == LOW ) {
     returnToOrigin();
@@ -797,6 +1118,10 @@ void handleNoSDState() {
     }
 
     if ( pendingCommand == cmdDrawFromFile ) {
+      if ( streamQueueActive() ) {
+        failPendingCommand(F("stream move queue not empty"));
+        return;
+      }
       if ( initialiseSD() ) {
         filePointer = int(pendingArgument1);
         clearPendingCommand();
@@ -811,7 +1136,7 @@ void handleNoSDState() {
     return;
   }
 
-  if ( executeNextQueuedStreamMove() ) return;
+  if ( !streamMoveQueuePaused && executeNextQueuedStreamMove() ) return;
 
   if ( digitalRead(toggle3) == LOW ) {
     resetHome();
@@ -1162,8 +1487,7 @@ void terminate() {
   //Serial.println("saving scan and feed to EEPROM");
   feedINT = feed * 100;
   scanINT = scan * 100;
-  EEPROM.put(0, feedINT);
-  EEPROM.put(15, scanINT);
+  savePositionToEEPROM();
   //Serial.print(feedINT);
   //Serial.print(",");
   //Serial.println(scanINT);

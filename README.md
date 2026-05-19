@@ -2,7 +2,7 @@
 
 Firmware for a Mega 2560-based VROS drawing machine / hanging plotter.
 
-Primary project documentation lives in the Obsidian vault `VBOT Vault` at `~/Documents/VBOT BRAIN/VBOT Vault`; future agents working on this repository should use that vault as the main reference and keep it updated alongside code changes.
+Primary project documentation lives in the Obsidian vault `VBOT Vault` at `~/Documents/03_VAULTS/VBOT Vault`; future agents working on this repository should use that vault as the main reference and keep it updated alongside code changes.
 
 Workspace mapping for future agents lives in [`PROJECT_CONTEXT.md`](PROJECT_CONTEXT.md) and [`project-context.json`](project-context.json).
 
@@ -12,10 +12,30 @@ This project drives a two-motor carriage system using an Arduino Mega 2560. The 
 
 - controls left and right stepper motors
 - stores and restores carriage position with EEPROM
+- stores robot-specific geometry and calibration values in EEPROM
 - reads drawing instructions from an SD card
 - accepts serial commands for movement, calibration, and drawing control
+- exposes a Control Station-oriented serial protocol for robot setup, EEPROM status, and diagnostics
 
 The active PlatformIO environment is defined in [platformio.ini](platformio.ini) for `megaatmega2560`.
+
+## Important Changes
+
+This firmware now supports a desktop-driven robot setup workflow instead of relying purely on hard-coded machine geometry.
+
+Major additions made in this iteration:
+
+- versioned robot-setup EEPROM storage with CRC validation
+- separate versioned carriage-position EEPROM storage
+- serial commands for reading, writing, loading, defaulting, and clearing EEPROM-backed robot setup
+- explicit reporting of robot setup EEPROM validity over serial
+- Control Station compatibility that now depends on an exact firmware version match
+
+This is an important protocol contract:
+
+- when firmware behavior changes in a way the desktop app depends on, the firmware version string must be incremented
+- the desktop app is expected to require that exact firmware version
+- this prevents the Control Station from silently talking to a robot that has an older or incompatible protocol
 
 ## Hardware Assumptions
 
@@ -27,10 +47,12 @@ The current firmware is configured for a specific physical machine setup:
 - rotary inputs on `A14` and `A15`
 - toggle switches and status LEDs on the pins defined in [`src/VROS_2.5.3_coilCalibration.ino`](src/VROS_2.5.3_coilCalibration.ino)
 
-Machine geometry and calibration values are hard-coded in the main sketch, including:
+The firmware still contains a compiled default robot profile, but those values are now also writable to EEPROM and can be managed from the Control Station. The robot setup includes:
 
 - motor spacing
 - scan/feed offsets
+- canvas height
+- line resolution
 - home position
 - steps-per-centimeter conversion
 - left/right coil compensation
@@ -64,6 +86,129 @@ The default monitor settings are configured in [platformio.ini](platformio.ini):
 - local echo enabled
 - `LF` line endings so commands match the firmware parser
 - `send_on_enter` so pressing Enter sends the command
+
+## Versioning And Compatibility
+
+The firmware boot banner is the compatibility identifier used by the Control Station.
+
+Current firmware banner:
+
+```text
+VROS_2.5.4_caseController
+```
+
+Important rule:
+
+- any firmware change that affects EEPROM layout, serial protocol, Control Station handshake, robot setup workflow, or machine-state reporting must increment this version string
+
+Why this matters:
+
+- the Control Station now treats the firmware version as a compatibility contract
+- legacy firmware is rejected
+- mismatched newer/older firmware is also rejected
+- the operator is told to flash the required version instead of getting partial or misleading behavior
+
+This should be treated as an operational rule, not as optional cleanup.
+
+## Robot Setup EEPROM
+
+The firmware now maintains two EEPROM concepts:
+
+1. Robot setup block
+2. Position block
+
+Robot setup block:
+
+- stores machine geometry and calibration values
+- is versioned
+- is CRC-protected
+- is read by the Control Station after connection
+
+Position block:
+
+- stores the last known carriage position
+- is versioned
+- is CRC-protected
+- still supports migration from the previous legacy position addresses
+
+Robot setup fields now persisted in EEPROM:
+
+- `motorDistance`
+- `scanOffset`
+- `feedOffset`
+- `height`
+- `lineResolution`
+- `homePosition`
+- `leftCoilFeed`
+- `rightCoilFeed`
+- `stepsToCm`
+
+Derived values that are not stored directly:
+
+- `width`
+- runtime-adjusted `stepsToCm`
+- `stepLength`
+
+## Invalid Robot Setup EEPROM Behavior
+
+This behavior changed deliberately during this chat and is important.
+
+Current behavior for an invalid or missing robot setup block:
+
+- the firmware does **not** automatically repair EEPROM
+- the firmware loads the compiled default setup into RAM so the machine can still boot
+- the firmware reports:
+
+```text
+robotSetupStatus	invalid
+```
+
+- the Control Station is expected to prompt the operator to burn a valid robot setup
+
+This is intentional because silent auto-repair hides configuration mistakes and makes it hard to know whether a robot is actually configured.
+
+Position EEPROM behavior is different:
+
+- the firmware still attempts to migrate legacy carriage position values into the new position block
+- if that fails, position falls back to origin-like defaults
+
+## Control Station Handshake
+
+The Control Station now expects the following connection model:
+
+1. robot boots and prints the exact required firmware banner
+2. Control Station verifies the banner
+3. Control Station requests `robotSetupGet`
+4. firmware returns `robotSetupStatus` and the active robot setup fields
+5. Control Station decides whether the EEPROM is valid, invalid, or the firmware is incompatible
+
+Failure cases:
+
+- legacy firmware without robot setup commands: connection refused
+- wrong firmware version: connection refused
+- invalid robot setup EEPROM: connection allowed, operator prompted to burn setup
+
+## Robot Setup Commands
+
+These commands were added or formalized for Control Station support:
+
+```text
+robotSetupGet
+robotSetupWrite	<motorDistance>,<scanOffset>,<feedOffset>,<height>,<lineResolution>,<homePosition>,<leftCoilFeed>,<rightCoilFeed>,<stepsToCm>
+robotSetupLoad
+robotSetupDefaults
+clearEEPROM
+```
+
+Command intent:
+
+- `robotSetupGet`: report EEPROM validity and the active runtime setup
+- `robotSetupWrite`: apply a full setup payload and persist it
+- `robotSetupLoad`: reload the EEPROM setup block into runtime state
+- `robotSetupDefaults`: write compiled defaults into EEPROM and make them active
+- `clearEEPROM`: wipe the full EEPROM, including robot setup and saved carriage position
+
+After setup-changing commands, the firmware also reports current position so the Control Station preview can update immediately.
 
 ## State Machine
 
@@ -119,6 +264,11 @@ continue
 retrySD
 monitoring on
 monitoring off
+robotSetupGet
+robotSetupWrite	62,10,20,50,0.5,82,1,0.997,35
+robotSetupLoad
+robotSetupDefaults
+clearEEPROM
 ```
 
 State-sensitive commands:
@@ -189,4 +339,5 @@ Important limitation:
 
 - The source is currently organized as multiple `.ino` files. That is intentional and works with Arduino/PlatformIO preprocessing.
 - External Arduino libraries may be expected in your local library folder because `platformio.ini` uses `lib_extra_dirs`.
-- The firmware appears tailored to one physical VROS machine, so calibration constants should be reviewed before running it on different hardware.
+- The firmware appears tailored to one physical VROS machine, but robot-specific setup is now expected to be managed through EEPROM and the Control Station instead of source edits alone.
+- If you change firmware behavior that the Control Station depends on, increment the firmware version banner and update the Control Station required version in lockstep.

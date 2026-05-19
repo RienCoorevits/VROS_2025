@@ -37,6 +37,8 @@ void controller() {
       pendingArgument1 = pendingText1.toFloat();
       pendingArgument2 = pendingText2.toFloat();
       pendingCommand = cmdStreamMove;
+    } else if ( advCommand.equals("robotSetupWrite") ) {
+      pendingCommand = cmdRobotSetupWrite;
     } else if ( advCommand.equals("type") ) {
       pendingCommand = cmdSetType;
     } else if ( advCommand.equals("mode") ) {
@@ -102,6 +104,14 @@ void controller() {
     pendingCommand = cmdPosition;
   } else if ( command.equals("retrySD") ) {
     pendingCommand = cmdRetrySD;
+  } else if ( command.equals("robotSetupGet") ) {
+    pendingCommand = cmdRobotSetupGet;
+  } else if ( command.equals("robotSetupLoad") ) {
+    pendingCommand = cmdRobotSetupLoad;
+  } else if ( command.equals("robotSetupDefaults") ) {
+    pendingCommand = cmdRobotSetupDefaults;
+  } else if ( command.equals("clearEEPROM") ) {
+    pendingCommand = cmdClearEEPROM;
   } else {
     Serial.println(F("error\tInvalid command"));
     clearPendingCommand();

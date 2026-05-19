@@ -2,7 +2,7 @@
   "project_name": "VROS",
   "role": "firmware",
   "repository_path": "/Users/u0127995/Documents/PlatformIO/Projects/260511-111720-megaatmega2560",
-  "primary_docs_vault": "/Users/u0127995/Documents/VBOT BRAIN/VBOT Vault",
+  "primary_docs_vault": "/Users/u0127995/Documents/03_VAULTS/VBOT Vault",
   "vault_home_note": "Welcome.md",
   "related_repositories": [
     {
@@ -11,15 +11,15 @@
     },
     {
       "name": "control-station",
-      "path": "/Users/u0127995/Documents/Developer/VROS Control Station"
+      "path": "/Users/u0127995/Documents/02_DEVELOPER/VROS Control Station"
     }
   ],
   "preferred_entry_notes": [
     "Welcome.md",
-    "Project Overview.md",
-    "Firmware Architecture.md",
-    "Serial And Drawing Workflow.md",
-    "Progress Logbook/2026-05-15.md"
+    "Firmware Documentation/Project Overview.md",
+    "Firmware Documentation/Firmware Architecture.md",
+    "Firmware Documentation/Serial And Drawing Workflow.md",
+    "Worklog/2026-05-15.md"
   ],
   "preferred_local_files": [
     "README.md",
