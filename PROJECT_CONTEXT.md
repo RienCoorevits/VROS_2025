@@ -49,6 +49,8 @@ For the current Control Station integration work, pay special attention to:
 
 - Treat the vault as the primary documentation source.
 - Keep vault notes in sync with meaningful code changes.
+- For every meaningful code change, update the relevant vault documentation and add or update a dated entry under `Worklog/`.
+- If the vault and the repo code/current direction diverge, treat that as documentation drift and fix the vault before relying on the stale note.
 - Do not assume the desktop app repo is the current working directory.
 - If a task mentions `VROS Control Station`, switch attention to the desktop app repo.
 - Treat firmware versioning as part of the wire protocol, not as cosmetic metadata.
