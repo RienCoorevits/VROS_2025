@@ -30,6 +30,8 @@ Major additions made in this iteration:
 - serial commands for reading, writing, loading, defaulting, and clearing EEPROM-backed robot setup
 - explicit reporting of robot setup EEPROM validity over serial
 - Control Station compatibility that now depends on an exact firmware version match
+- a single Bresenham-based motion engine that replaces the older `segmented` and `movePen` implementations
+- a Timer1-driven pulse backend shared by coordinated Bresenham motion and manual `stepL` / `stepR` commands
 
 This is an important protocol contract:
 
@@ -52,7 +54,7 @@ The firmware still contains a compiled default robot profile, but those values a
 - motor spacing
 - scan/feed offsets
 - canvas height
-- line resolution
+- line resolution used for geometric resampling before Bresenham step scheduling
 - home position
 - steps-per-centimeter conversion
 - left/right coil compensation
@@ -61,10 +63,8 @@ The firmware still contains a compiled default robot profile, but those values a
 
 - [`src/VROS_2.5.3_coilCalibration.ino`](src/VROS_2.5.3_coilCalibration.ino): main entry point, setup, loop, state machine, geometry, SD and EEPROM helpers
 - [`src/controller.ino`](src/controller.ino): serial command parser
-- [`src/movePenSegmented.ino`](src/movePenSegmented.ino): segmented motion algorithm
-- [`src/movePen.ino`](src/movePen.ino): alternate direct motion algorithm
+- [`src/movePenBresenham.ino`](src/movePenBresenham.ino): Bresenham-based motion engine, Timer1 pulse scheduling, motion-mode normalization, and per-segment step planning
 - [`src/shapes.ino`](src/shapes.ino): drawing primitives and geometry helpers used by shape-style paths
-- [`src/serialPlot.ino`](src/serialPlot.ino): serial plotting/debug helper
 - [`drawings/`](drawings): repo-local drawing files that can be streamed over serial
 - [`scripts/stream_drawing.py`](scripts/stream_drawing.py): host-side serial streaming tool
 
@@ -94,7 +94,7 @@ The firmware boot banner is the compatibility identifier used by the Control Sta
 Current firmware banner:
 
 ```text
-VROS_2.5.4_caseController
+VROS_2.5.5_caseController
 ```
 
 Important rule:
@@ -248,7 +248,7 @@ Examples of supported commands:
 drawFromFile,<file>
 move,<scan>,<feed>
 type,<absolute|relative>
-mode,<segmented|movePen>
+mode,<bresenham>
 adjustment,<none|largeSin|complexSin|noise>
 stepL,<amount>
 stepR,<amount>
@@ -287,7 +287,7 @@ The recommended file format matches the SD instruction format:
 
 ```text
 type	absolute
-mode	segmented
+mode	bresenham
 adjustment	none
 move	21,31
 move	25,31
@@ -306,6 +306,7 @@ How it works:
 
 - the script opens the serial port, waits for the board to boot, and sends one drawing instruction at a time
 - the firmware accepts streamed `move`, `type`, `mode`, and `adjustment` instructions over serial
+- `mode<TAB>segmented` and `mode<TAB>movePen` are still accepted as legacy aliases and normalized to `mode<TAB>bresenham`
 - after each instruction completes, the firmware replies with `ok`
 - the script waits for `ok` before sending the next instruction, so long moves do not overflow the serial buffer
 

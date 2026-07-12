@@ -8,8 +8,8 @@
 //https://tangrams.github.io/heightmapper
 
 const char FIRMWARE_PRODUCT_NAME[] = "VROS_caseController";
-const char FIRMWARE_SEMVER[] = "2.5.4";
-const char FIRMWARE_COMPAT_ID[] = "VROS_2.5.4_caseController";
+const char FIRMWARE_SEMVER[] = "2.5.5";
+const char FIRMWARE_COMPAT_ID[] = "VROS_2.5.5_caseController";
 
 
 // pin definitions
@@ -118,21 +118,6 @@ int minStepperPulse = 50;
 String type = "absolute"; // relative/absolute
 long gestureCount; //counts the gestures in the drawing
 
-//movePenSegmented vars
-int segmentLength = 200;
-float scanSegment[200];
-float feedSegment[200];
-boolean directionA[200];
-boolean directionB[200];
-float motorRatioL[200];
-float motorRatioR[200];
-
-//error vars
-//only movePen() uses this and its functionality can be
-//removed completely
-int totalOvershotLeft;
-int totalOvershotRight;
-
 //EEPROM vars
 long scanINT;
 long feedINT;
@@ -204,7 +189,7 @@ const unsigned long sdRetryIntervalMs = 2000;
 ///////////////////////////////////////////////////
 
 // setting vars
-String mode = "segmented"; //selects drawing algorithm
+String mode = "bresenham"; // canonical motion engine
 boolean monitoring = false;
 boolean waitForStep = false;
 boolean upperBound = false;
@@ -425,6 +410,7 @@ void setup() {
   pinMode(STEP_LEFT_PIN, OUTPUT);
   pinMode(DIR_RIGHT_PIN, OUTPUT);
   pinMode(STEP_RIGHT_PIN, OUTPUT);
+  configureMotionPulseTimer();
 
   //setting up microstepping
   pinMode(MICROSTEP_PIN, OUTPUT);
@@ -753,7 +739,10 @@ boolean handleManualMotionCommand() {
         failPendingCommand(F("stream move queue not empty"));
         return true;
       }
-      mode = pendingText1;
+      if ( !applyMotionMode(pendingText1) ) {
+        failPendingCommand(F("unsupported mode"));
+        return true;
+      }
       finishPendingCommand();
       return true;
 
@@ -770,19 +759,19 @@ boolean handleManualMotionCommand() {
       type = "absolute";
       printPosition();
       for ( int x = 0; x <= width; x++ ) {
-        movePenSegmented(x, 0);
+        gesture(x, 0);
       }
       printPosition();
       for ( int x = 0; x <= height; x++ ) {
-        movePenSegmented(width, x);
+        gesture(width, x);
       }
       printPosition();
       for ( int x = 0; x <= width; x++ ) {
-        movePenSegmented(width - x, height);
+        gesture(width - x, height);
       }
       printPosition();
       for ( int x = 0; x <= height; x++ ) {
-        movePenSegmented(0, height - x);
+        gesture(0, height - x);
       }
       printPosition();
       Serial.println(F("done"));
@@ -868,7 +857,10 @@ boolean handleDrawingInstruction() {
   } else if ( dataCommand == "type" ) {
     type = dataValue;
   } else if ( dataCommand == "mode" ) {
-    mode = dataValue;
+    if ( !applyMotionMode(dataValue) ) {
+      Serial.print(F("unknown mode:\t"));
+      Serial.println(dataValue);
+    }
   } else if ( dataCommand == "adjustment" ) {
     adjustmentType = dataValue;
   } else if ( dataCommand.length() ) {
@@ -1166,8 +1158,7 @@ void handleNoSDState() {
 ///////////////////////////////////////////////////
 
 void gesture(float xPos, float yPos) {
-  if ( mode == "segmented" ) movePenSegmented(xPos, yPos);
-  if ( mode == "movePen" ) movePen(xPos, yPos);
+  movePenBresenham(xPos, yPos);
 }
 
 float segmentAdjustment(float scanLine, float feedLine, String getter) {
@@ -1279,8 +1270,13 @@ void writeType(String value) {
 
 void writeMode(String value) {
   if ( dataFile ) {
+    String normalizedMode = normalizeMotionMode(value);
     dataFile.print("mode\t");
-    dataFile.println(value);
+    if ( normalizedMode.length() ) {
+      dataFile.println(normalizedMode);
+    } else {
+      dataFile.println(value);
+    }
   }
 }
 
@@ -1548,29 +1544,9 @@ void printPosition() {
 ///////////////////////////////////////////////////
 
 void stepL(int amount) {
-  if ( amount > 0) {
-    digitalWrite(DIR_LEFT_PIN, HIGH);
-  } else if ( amount < 0) {
-    digitalWrite(DIR_LEFT_PIN, LOW);
-  }
-  for ( int x = 0; x < abs(amount); x++ ) {
-    digitalWrite(STEP_LEFT_PIN, HIGH);
-    delayMicroseconds(minStepperDelay);
-    digitalWrite(STEP_LEFT_PIN, LOW);
-    delayMicroseconds(minStepperDelay);
-  }
+  runBresenhamSteps(amount, 0);
 }
 
 void stepR(int amount) {
-  if ( amount > 0) {
-    digitalWrite(DIR_RIGHT_PIN, HIGH);
-  } else if ( amount < 0) {
-    digitalWrite(DIR_RIGHT_PIN, LOW);
-  }
-  for ( int x = 0; x < abs(amount); x++ ) {
-    digitalWrite(STEP_RIGHT_PIN, HIGH);
-    delayMicroseconds(minStepperDelay);
-    digitalWrite(STEP_RIGHT_PIN, LOW);
-    delayMicroseconds(minStepperDelay);
-  }
+  runBresenhamSteps(0, amount);
 }
