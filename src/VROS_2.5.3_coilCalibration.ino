@@ -8,8 +8,8 @@
 //https://tangrams.github.io/heightmapper
 
 const char FIRMWARE_PRODUCT_NAME[] = "VROS_caseController";
-const char FIRMWARE_SEMVER[] = "2.5.5";
-const char FIRMWARE_COMPAT_ID[] = "VROS_2.5.5_caseController";
+const char FIRMWARE_SEMVER[] = "2.5.7";
+const char FIRMWARE_COMPAT_ID[] = "VROS_2.5.7_caseController";
 
 
 // pin definitions
@@ -611,7 +611,15 @@ boolean executeNextQueuedStreamMove() {
   float feedPos;
   if ( !popQueuedStreamMove(scanPos, feedPos) ) return false;
 
+  Serial.print(F("moving to\t"));
+  Serial.print(scanPos, 4);
+  Serial.print(F(","));
+  Serial.println(feedPos, 4);
   gesture(scanPos, feedPos);
+  Serial.print(F("moveComplete\t"));
+  Serial.print(scan, 4);
+  Serial.print(F(","));
+  Serial.println(feed, 4);
   return true;
 }
 
@@ -634,6 +642,15 @@ boolean handleSharedCommand() {
   if ( !hasPendingCommand ) return false;
 
   switch (pendingCommand) {
+    case cmdAbort:
+      if ( machineState == drawing || machineState == pausing || streamQueueActive() ) {
+        drawOutcome = drawAborted;
+        clearPendingCommand();
+        enterState(aborting);
+        return true;
+      }
+      return false;
+
     case cmdSetSpeed:
       minStepperDelay = int(pendingArgument1);
       minStepperPulse = int(pendingArgument1);
@@ -780,6 +797,9 @@ boolean handleManualMotionCommand() {
 
     case cmdReturnToOrigin:
       returnToOrigin();
+      if ( machineState == launchpad ) {
+        enterState(idle);
+      }
       finishPendingCommand();
       return true;
 

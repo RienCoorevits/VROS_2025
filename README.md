@@ -94,7 +94,7 @@ The firmware boot banner is the compatibility identifier used by the Control Sta
 Current firmware banner:
 
 ```text
-VROS_2.5.5_caseController
+VROS_2.5.6_caseController
 ```
 
 Important rule:
@@ -230,7 +230,7 @@ Allowed high-level transitions:
 - `drawing|pausing -> aborting` via toggle or `abort`
 - `aborting -> idle` after file cleanup and any completion handling
 - `idle|noSD -> launchpad` via `resetHome`
-- `launchpad -> idle` via toggle 4
+- `launchpad -> idle` via toggle 4 or serial `returnToOrigin`
 - `noSD -> idle` when an SD card is detected later
 
 Behavioral notes:
