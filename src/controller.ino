@@ -45,6 +45,8 @@ void controller() {
       pendingCommand = cmdSetMode;
     } else if ( advCommand.equals("adjustment") ) {
       pendingCommand = cmdSetAdjustment;
+    } else if ( advCommand.equals("contact") ) {
+      pendingCommand = cmdSetContact;
     } else {
       Serial.println(F("error\tInvalid command"));
       clearPendingCommand();
@@ -76,6 +78,8 @@ void controller() {
     pendingCommand = cmdSetMode;
   } else if ( advCommand.equals("adjustment") ) {
     pendingCommand = cmdSetAdjustment;
+  } else if ( advCommand.equals("contact") ) {
+    pendingCommand = cmdSetContact;
   } else if ( advCommand.equals("stepL") ) {
     pendingCommand = cmdStepL;
   } else if ( advCommand.equals("stepR") ) {

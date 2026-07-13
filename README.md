@@ -30,6 +30,8 @@ Major additions made in this iteration:
 - serial commands for reading, writing, loading, defaulting, and clearing EEPROM-backed robot setup
 - explicit reporting of robot setup EEPROM validity over serial
 - Control Station compatibility that now depends on an exact firmware version match
+- robot-kind-aware setup storage and reporting for both `hanging_vbot` and `flat_quad_tension`
+- quad telemetry reporting for `robotKind`, `contactState`, and four `cableLengths`
 - a single Bresenham-based motion engine that replaces the older `segmented` and `movePen` implementations
 - a Timer1-driven pulse backend shared by coordinated Bresenham motion and manual `stepL` / `stepR` commands
 
@@ -94,7 +96,7 @@ The firmware boot banner is the compatibility identifier used by the Control Sta
 Current firmware banner:
 
 ```text
-VROS_2.5.6_caseController
+VROS_2.5.10_caseController
 ```
 
 Important rule:
@@ -133,19 +135,28 @@ Position block:
 
 Robot setup fields now persisted in EEPROM:
 
+- `robotKind`
 - `motorDistance`
 - `scanOffset`
 - `feedOffset`
+- `width`
 - `height`
 - `lineResolution`
 - `homePosition`
 - `leftCoilFeed`
 - `rightCoilFeed`
 - `stepsToCm`
+- `quadHomeScan`
+- `quadHomeFeed`
+- `quadCableAFeed`
+- `quadCableBFeed`
+- `quadCableCFeed`
+- `quadCableDFeed`
+- `quadDrawLiftValue`
+- `quadTravelLiftValue`
 
-Derived values that are not stored directly:
+Derived/runtime values that are not stored directly:
 
-- `width`
 - runtime-adjusted `stepsToCm`
 - `stepLength`
 
@@ -195,20 +206,40 @@ These commands were added or formalized for Control Station support:
 ```text
 robotSetupGet
 robotSetupWrite	<motorDistance>,<scanOffset>,<feedOffset>,<height>,<lineResolution>,<homePosition>,<leftCoilFeed>,<rightCoilFeed>,<stepsToCm>
+robotSetupWrite	robotKind=flat_quad_tension,width=42,height=50,lineResolution=0.5,stepsToCm=35,quadHomeScan=21,quadHomeFeed=25,quadCableAFeed=1,quadCableBFeed=1,quadCableCFeed=1,quadCableDFeed=1,quadDrawLiftValue=0,quadTravelLiftValue=1
 robotSetupLoad
 robotSetupDefaults
 clearEEPROM
+contact	draw|travel
 ```
 
 Command intent:
 
 - `robotSetupGet`: report EEPROM validity and the active runtime setup
-- `robotSetupWrite`: apply a full setup payload and persist it
+- `robotSetupWrite`: apply a full setup payload and persist it; both the legacy V-bot CSV payload and the newer schema-aware `key=value` payload are accepted
 - `robotSetupLoad`: reload the EEPROM setup block into runtime state
 - `robotSetupDefaults`: write compiled defaults into EEPROM and make them active
 - `clearEEPROM`: wipe the full EEPROM, including robot setup and saved carriage position
+- `contact`: update the current binary contact state for telemetry and future quad lift handling
 
 After setup-changing commands, the firmware also reports current position so the Control Station preview can update immediately.
+
+## Quad Status
+
+The firmware now has a first implementation pass for the flat quad robot:
+
+- schema-aware setup read/write support
+- quad home and lift placeholders in EEPROM
+- quad scan/feed offsets in cable geometry
+- `robotKind`, `contactState`, and four-cable telemetry reporting
+- `motionSupport` and `motionBackend` reporting so the desktop can decide whether quad streaming is available
+- solved `x/y` reporting through the same position protocol used by the Control Station
+- a generic multi-axis pulse planner that can drive either the existing hanging-bot backend or a future four-axis quad backend
+
+Important current limit:
+
+- the current default build assumes a RAMPS 1.4 map that routes quad cables A/B/C/D through the X/Y/Z/E0 driver sockets
+- per-motor direction inversion may still need tuning on the real machine
 
 ## State Machine
 
