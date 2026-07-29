@@ -41,7 +41,7 @@ Then inspect these local files:
 For the current Control Station integration work, pay special attention to:
 
 1. the firmware version banner
-2. `robotSetupStatus`
+2. the structured `vros` status/config/event protocol, especially `robotSetupStatus`
 3. `robotSetupGet` / `robotSetupWrite` / `clearEEPROM`
 4. the rule that firmware behavior changes which affect the desktop protocol must increment the firmware version
 

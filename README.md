@@ -91,12 +91,18 @@ The default monitor settings are configured in [platformio.ini](platformio.ini):
 
 ## Versioning And Compatibility
 
-The firmware boot banner is the compatibility identifier used by the Control Station.
+The firmware now exposes a structured `vros` compatibility handshake for the Control Station.
 
 Current firmware banner:
 
 ```text
-VROS_2.5.10_caseController
+VROS_2.5.11_caseController
+```
+
+Current host protocol version:
+
+```text
+1
 ```
 
 Important rule:
@@ -111,6 +117,38 @@ Why this matters:
 - the operator is told to flash the required version instead of getting partial or misleading behavior
 
 This should be treated as an operational rule, not as optional cleanup.
+
+## Host Status Protocol
+
+Host-facing telemetry now uses a structured line format:
+
+```text
+vros	<section>	<field>	<value>
+```
+
+Current sections:
+
+- `compat` for protocol and firmware identity
+- `status` for live machine state
+- `config` for robot-setup and EEPROM-backed values
+- `event` for one-shot completions and errors
+
+Representative lines:
+
+```text
+vros	compat	protocolVersion	1
+vros	compat	firmwareVersion	VROS_2.5.11_caseController
+vros	status	state	idle
+vros	status	position	21.0000,31.0000
+vros	config	robotSetupStatus	valid
+vros	event	moveComplete	21.0000,31.0000
+```
+
+Important compatibility rule:
+
+- host commands stay unchanged
+- streamed-job acknowledgements still use raw `ok`
+- human-oriented debug text may still appear, but the Control Station should depend on `vros` records for machine state and configuration
 
 ## Robot Setup EEPROM
 
@@ -169,9 +207,9 @@ Current behavior for an invalid or missing robot setup block:
 - the firmware does **not** automatically repair EEPROM
 - the firmware loads the compiled default setup into RAM so the machine can still boot
 - the firmware reports:
-
+ 
 ```text
-robotSetupStatus	invalid
+vros	config	robotSetupStatus	invalid
 ```
 
 - the Control Station is expected to prompt the operator to burn a valid robot setup
@@ -187,10 +225,11 @@ Position EEPROM behavior is different:
 
 The Control Station now expects the following connection model:
 
-1. robot boots and prints the exact required firmware banner
-2. Control Station verifies the banner
+1. robot boots and emits `vros	compat	protocolVersion	...`
+2. robot emits `vros	compat	firmwareVersion	...`
+3. Control Station verifies both values
 3. Control Station requests `robotSetupGet`
-4. firmware returns `robotSetupStatus` and the active robot setup fields
+4. firmware returns `vros	config	robotSetupStatus	...` plus the active robot setup fields
 5. Control Station decides whether the EEPROM is valid, invalid, or the firmware is incompatible
 
 Failure cases:
@@ -238,7 +277,7 @@ The firmware now has a first implementation pass for the flat quad robot:
 
 Important current limit:
 
-- the current default build assumes a RAMPS 1.4 map that routes quad cables A/B/C/D through the X/Y/Z/E0 driver sockets
+- the current default build assumes a RAMPS 1.4 map that routes quad cables A/B/C/D through the X/Y/E0/E1 driver sockets
 - per-motor direction inversion may still need tuning on the real machine
 
 ## State Machine
@@ -278,9 +317,19 @@ Examples of supported commands:
 ```text
 drawFromFile,<file>
 move,<scan>,<feed>
+moveX,<deltaScan>
+moveY,<deltaFeed>
+moveLeft,<distance>
+moveRight,<distance>
+moveUp,<distance>
+moveDown,<distance>
 type,<absolute|relative>
 mode,<bresenham>
 adjustment,<none|largeSin|complexSin|noise>
+stepA,<amount>
+stepB,<amount>
+stepC,<amount>
+stepD,<amount>
 stepL,<amount>
 stepR,<amount>
 setSpeed,<delay>
@@ -308,7 +357,14 @@ State-sensitive commands:
 - `pause` is only accepted while `drawing`
 - `continue` is only accepted while `pausing`
 - `abort` is only accepted while `drawing` or `pausing`
-- manual commands such as `move`, `stepL`, `stepR`, `returnToOrigin`, and `position` are accepted in non-drawing states
+- manual commands such as `move`, `moveX`, `moveY`, `moveLeft`, `moveRight`, `moveUp`, `moveDown`, `stepA`, `stepB`, `stepC`, `stepD`, `stepL`, `stepR`, `returnToOrigin`, and `position` are accepted in non-drawing states
+
+Jog and debug notes:
+
+- `moveX` and `moveY` are relative jogs in centimeters from the current logical position
+- `moveLeft`, `moveRight`, `moveUp`, and `moveDown` are directional jog aliases; in this coordinate system, `up` means negative feed and `down` means positive feed
+- `stepL` and `stepR` remain compatibility aliases for `stepA` and `stepB`
+- raw `step*` commands are intended for wiring and direction bring-up; they do not update the logical scan/feed position model, so return the carriage to a known pose and run `resetHome` before trusting `position` or later absolute moves
 
 ## Streaming Drawings From The Repo
 

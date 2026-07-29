@@ -8,8 +8,9 @@
 //https://tangrams.github.io/heightmapper
 
 const char FIRMWARE_PRODUCT_NAME[] = "VROS_caseController";
-const char FIRMWARE_SEMVER[] = "2.5.10";
-const char FIRMWARE_COMPAT_ID[] = "VROS_2.5.10_caseController";
+const char FIRMWARE_SEMVER[] = "2.5.11";
+const char FIRMWARE_COMPAT_ID[] = "VROS_2.5.11_caseController";
+const byte HOST_PROTOCOL_VERSION = 1;
 
 
 // pin definitions
@@ -17,9 +18,6 @@ const char FIRMWARE_COMPAT_ID[] = "VROS_2.5.10_caseController";
 #define STEP_LEFT_PIN 7
 #define DIR_RIGHT_PIN 8
 #define STEP_RIGHT_PIN 9
-#define FAULTLEFT 0
-#define FAULTRIGHT 1
-#define MICROSTEP_PIN 5
 #define toggle1 26
 #define toggle2 28
 #define toggle3 22
@@ -253,6 +251,16 @@ enum CommandType {
   cmdStreamMove,
   cmdStepL,
   cmdStepR,
+  cmdStepA,
+  cmdStepB,
+  cmdStepC,
+  cmdStepD,
+  cmdMoveX,
+  cmdMoveY,
+  cmdMoveLeft,
+  cmdMoveRight,
+  cmdMoveUp,
+  cmdMoveDown,
   cmdSetType,
   cmdSetMode,
   cmdSetAdjustment,
@@ -310,7 +318,8 @@ boolean lowerBound = false;
 boolean leftBound = true;
 boolean rightBound = true;
 String adjustmentType = "none";
-float microstepResolution = 0.0625;
+// Match this to the RAMPS MS jumper mode on every active driver socket.
+const float microstepResolution = 0.0625f;
 
 unsigned long crc32Update(unsigned long crc, const byte* data, unsigned int length) {
   crc = ~crc;
@@ -399,6 +408,82 @@ const char* getMotionBackendToken(MotionBackendId backend) {
 
 const char* getMotionSupportToken(boolean supported) {
   return supported ? "enabled" : "disabled";
+}
+
+void emitProtocolPrefix(const __FlashStringHelper* section, const __FlashStringHelper* fieldName) {
+  Serial.print(F("vros\t"));
+  Serial.print(section);
+  Serial.print(F("\t"));
+  Serial.print(fieldName);
+  Serial.print(F("\t"));
+}
+
+void emitProtocolText(
+  const __FlashStringHelper* section,
+  const __FlashStringHelper* fieldName,
+  const __FlashStringHelper* value
+) {
+  emitProtocolPrefix(section, fieldName);
+  Serial.println(value);
+}
+
+void emitProtocolText(
+  const __FlashStringHelper* section,
+  const __FlashStringHelper* fieldName,
+  const char* value
+) {
+  emitProtocolPrefix(section, fieldName);
+  Serial.println(value);
+}
+
+void emitProtocolText(
+  const __FlashStringHelper* section,
+  const __FlashStringHelper* fieldName,
+  const String& value
+) {
+  emitProtocolPrefix(section, fieldName);
+  Serial.println(value);
+}
+
+void emitProtocolBool(
+  const __FlashStringHelper* section,
+  const __FlashStringHelper* fieldName,
+  boolean value
+) {
+  emitProtocolPrefix(section, fieldName);
+  Serial.println(value ? F("1") : F("0"));
+}
+
+void emitProtocolInt(
+  const __FlashStringHelper* section,
+  const __FlashStringHelper* fieldName,
+  long value
+) {
+  emitProtocolPrefix(section, fieldName);
+  Serial.println(value);
+}
+
+void emitProtocolFloat(
+  const __FlashStringHelper* section,
+  const __FlashStringHelper* fieldName,
+  float value,
+  byte precision = 4
+) {
+  emitProtocolPrefix(section, fieldName);
+  Serial.println(value, precision);
+}
+
+void emitProtocolPair(
+  const __FlashStringHelper* section,
+  const __FlashStringHelper* fieldName,
+  float first,
+  float second,
+  byte precision = 4
+) {
+  emitProtocolPrefix(section, fieldName);
+  Serial.print(first, precision);
+  Serial.print(F(","));
+  Serial.println(second, precision);
 }
 
 const RobotSetupPayload& defaultRobotSetupForKind(RobotKindId robotKind) {
@@ -668,15 +753,14 @@ void reportUnsupportedMotion() {
   unsigned long now = millis();
   if ( now - lastUnsupportedMotionReportAt < 500UL ) return;
   lastUnsupportedMotionReportAt = now;
-  Serial.println(F("error\tquad motion not implemented"));
+  emitProtocolText(F("event"), F("error"), F("quad motion not implemented"));
 }
 
 void setContactState(ContactStateId nextState, boolean report) {
   if ( nextState == contactStateUnknown ) return;
   contactState = nextState;
   if ( report ) {
-    Serial.print(F("contactState\t"));
-    Serial.println(getContactStateToken(contactState));
+    emitProtocolText(F("status"), F("contactState"), getContactStateToken(contactState));
   }
 }
 
@@ -697,14 +781,20 @@ void updateCableTelemetryFromPosition() {
 }
 
 void printMotionCapability() {
-  Serial.print(F("motionSupport\t"));
-  Serial.println(getMotionSupportToken(motionImplementedForRobotKind(currentRobotKind)));
-  Serial.print(F("motionBackend\t"));
-  Serial.println(getMotionBackendToken(getMotionBackendForRobotKind(currentRobotKind)));
+  emitProtocolText(
+    F("status"),
+    F("motionSupport"),
+    getMotionSupportToken(motionImplementedForRobotKind(currentRobotKind))
+  );
+  emitProtocolText(
+    F("status"),
+    F("motionBackend"),
+    getMotionBackendToken(getMotionBackendForRobotKind(currentRobotKind))
+  );
 }
 
 void printCableTelemetry() {
-  Serial.print(F("cableLengths\t"));
+  emitProtocolPrefix(F("status"), F("cableLengths"));
   Serial.print(currentCableLengths[0], 4);
   Serial.print(F(","));
   Serial.print(currentCableLengths[1], 4);
@@ -719,51 +809,33 @@ void printCableTelemetry() {
 }
 
 void printRobotSetup() {
-  Serial.print(F("robotKind\t"));
-  Serial.println(getRobotKindToken(currentRobotKind));
-  Serial.print(F("contactState\t"));
-  Serial.println(getContactStateToken(contactState));
+  emitProtocolText(F("status"), F("robotKind"), getRobotKindToken(currentRobotKind));
+  emitProtocolText(F("status"), F("contactState"), getContactStateToken(contactState));
   printMotionCapability();
-  Serial.print(F("robotSetupStatus\t"));
-  Serial.println(robotSetupEEPROMValid ? F("valid") : F("invalid"));
-  Serial.print(F("robotSetup\trobotKind\t"));
-  Serial.println(getRobotKindToken(currentRobotKind));
-  Serial.print(F("robotSetup\tmotorDistance\t"));
-  Serial.println(motorDistance, 4);
-  Serial.print(F("robotSetup\tscanOffset\t"));
-  Serial.println(scanOffset, 4);
-  Serial.print(F("robotSetup\tfeedOffset\t"));
-  Serial.println(feedOffset, 4);
-  Serial.print(F("robotSetup\twidth\t"));
-  Serial.println(width, 4);
-  Serial.print(F("robotSetup\theight\t"));
-  Serial.println(height, 4);
-  Serial.print(F("robotSetup\tlineResolution\t"));
-  Serial.println(lineResolution, 4);
-  Serial.print(F("robotSetup\thomePosition\t"));
-  Serial.println(homePosition, 4);
-  Serial.print(F("robotSetup\tleftCoilFeed\t"));
-  Serial.println(leftCoilFeed, 4);
-  Serial.print(F("robotSetup\trightCoilFeed\t"));
-  Serial.println(rightCoilFeed, 4);
-  Serial.print(F("robotSetup\tstepsToCm\t"));
-  Serial.println(stepsToCmBase, 4);
-  Serial.print(F("robotSetup\tquadHomeScan\t"));
-  Serial.println(quadHomeScan, 4);
-  Serial.print(F("robotSetup\tquadHomeFeed\t"));
-  Serial.println(quadHomeFeed, 4);
-  Serial.print(F("robotSetup\tquadCableAFeed\t"));
-  Serial.println(quadCableAFeed, 4);
-  Serial.print(F("robotSetup\tquadCableBFeed\t"));
-  Serial.println(quadCableBFeed, 4);
-  Serial.print(F("robotSetup\tquadCableCFeed\t"));
-  Serial.println(quadCableCFeed, 4);
-  Serial.print(F("robotSetup\tquadCableDFeed\t"));
-  Serial.println(quadCableDFeed, 4);
-  Serial.print(F("robotSetup\tquadDrawLiftValue\t"));
-  Serial.println(quadDrawLiftValue, 4);
-  Serial.print(F("robotSetup\tquadTravelLiftValue\t"));
-  Serial.println(quadTravelLiftValue, 4);
+  emitProtocolText(
+    F("config"),
+    F("robotSetupStatus"),
+    robotSetupEEPROMValid ? F("valid") : F("invalid")
+  );
+  emitProtocolText(F("config"), F("robotSetup.robotKind"), getRobotKindToken(currentRobotKind));
+  emitProtocolFloat(F("config"), F("robotSetup.motorDistance"), motorDistance);
+  emitProtocolFloat(F("config"), F("robotSetup.scanOffset"), scanOffset);
+  emitProtocolFloat(F("config"), F("robotSetup.feedOffset"), feedOffset);
+  emitProtocolFloat(F("config"), F("robotSetup.width"), width);
+  emitProtocolFloat(F("config"), F("robotSetup.height"), height);
+  emitProtocolFloat(F("config"), F("robotSetup.lineResolution"), lineResolution);
+  emitProtocolFloat(F("config"), F("robotSetup.homePosition"), homePosition);
+  emitProtocolFloat(F("config"), F("robotSetup.leftCoilFeed"), leftCoilFeed);
+  emitProtocolFloat(F("config"), F("robotSetup.rightCoilFeed"), rightCoilFeed);
+  emitProtocolFloat(F("config"), F("robotSetup.stepsToCm"), stepsToCmBase);
+  emitProtocolFloat(F("config"), F("robotSetup.quadHomeScan"), quadHomeScan);
+  emitProtocolFloat(F("config"), F("robotSetup.quadHomeFeed"), quadHomeFeed);
+  emitProtocolFloat(F("config"), F("robotSetup.quadCableAFeed"), quadCableAFeed);
+  emitProtocolFloat(F("config"), F("robotSetup.quadCableBFeed"), quadCableBFeed);
+  emitProtocolFloat(F("config"), F("robotSetup.quadCableCFeed"), quadCableCFeed);
+  emitProtocolFloat(F("config"), F("robotSetup.quadCableDFeed"), quadCableDFeed);
+  emitProtocolFloat(F("config"), F("robotSetup.quadDrawLiftValue"), quadDrawLiftValue);
+  emitProtocolFloat(F("config"), F("robotSetup.quadTravelLiftValue"), quadTravelLiftValue);
 }
 
 boolean parseRobotSetupWritePayload(const String& rawValue, RobotSetupPayload& payload) {
@@ -915,10 +987,6 @@ void setup() {
   pinMode(STEP_RIGHT_PIN, OUTPUT);
   configureMotionPulseTimer();
 
-  //setting up microstepping
-  pinMode(MICROSTEP_PIN, OUTPUT);
-  digitalWrite(MICROSTEP_PIN, HIGH);
-
   //testing if case is connected
   //we haven't found a good way yet to test this.
 
@@ -939,6 +1007,9 @@ void setup() {
   Serial.println(F("_____________________________________"));
   Serial.println(FIRMWARE_COMPAT_ID);
   Serial.println(F("_____________________________________"));
+  emitProtocolInt(F("compat"), F("protocolVersion"), HOST_PROTOCOL_VERSION);
+  emitProtocolText(F("compat"), F("firmwareVersion"), FIRMWARE_COMPAT_ID);
+  emitProtocolText(F("compat"), F("product"), FIRMWARE_PRODUCT_NAME);
 
   Serial.println(F("_____________________________________"));
   Serial.println(F("SETTINGS"));
@@ -947,15 +1018,14 @@ void setup() {
   Serial.println(detectCase);
   Serial.print(F("canvasWidth:\t"));
   Serial.println(width);
+  emitProtocolFloat(F("status"), F("canvasWidth"), width);
   Serial.print(F("canvasHeight:\t"));
   Serial.println(height);
-  Serial.print(F("robotKind\t"));
-  Serial.println(getRobotKindToken(currentRobotKind));
-  Serial.print(F("contactState\t"));
-  Serial.println(getContactStateToken(contactState));
+  emitProtocolFloat(F("status"), F("canvasHeight"), height);
   printMotionCapability();
   Serial.print(F("monitoring:\t"));
   Serial.println(monitoring);
+  emitProtocolBool(F("status"), F("monitoring"), monitoring);
   Serial.print(F("upperBound:\t"));
   Serial.println(upperBound);
   Serial.print(F("lowerBound:\t"));
@@ -991,7 +1061,7 @@ void setup() {
     Serial.println(F("_____________________________________"));
     Serial.println(F("PEN IS NOT AT ORIGIN!"));
     Serial.println(F("_____________________________________"));
-
+    emitProtocolText(F("status"), F("positionConfidence"), F("stale-eeprom"));
   }
 
   Serial.println(F(">drawFromFile, file"));
@@ -999,7 +1069,17 @@ void setup() {
   Serial.println(F(">pause"));
   Serial.println(F(">continue"));
   Serial.println(F(">move, scan, feed"));
+  Serial.println(F(">moveX, deltaScan"));
+  Serial.println(F(">moveY, deltaFeed"));
+  Serial.println(F(">moveLeft, distance"));
+  Serial.println(F(">moveRight, distance"));
+  Serial.println(F(">moveUp, distance"));
+  Serial.println(F(">moveDown, distance"));
   Serial.println(F(">contact\\tdraw|travel"));
+  Serial.println(F(">stepA, amount"));
+  Serial.println(F(">stepB, amount"));
+  Serial.println(F(">stepC, amount"));
+  Serial.println(F(">stepD, amount"));
   Serial.println(F(">stepL, amount"));
   Serial.println(F(">stepR, amount"));
   Serial.println(F(">monitoring on/off"));
@@ -1046,6 +1126,7 @@ void loop() {
 
     default:
       Serial.println(F("state->default"));
+      emitProtocolText(F("event"), F("error"), F("unknown state fallback"));
       enterState(idle);
       break;
 
@@ -1070,6 +1151,8 @@ void enterState(MachineState nextState) {
   machineState = nextState;
   Serial.print(F("state->"));
   Serial.println(getStateName(machineState));
+  emitProtocolText(F("status"), F("state"), getStateName(machineState));
+  emitProtocolBool(F("status"), F("sdAvailable"), machineState != noSD);
 
   if ( machineState == drawing ) {
     drawOutcome = drawNone;
@@ -1133,11 +1216,15 @@ boolean executeNextQueuedStreamMove() {
   Serial.print(scanPos, 4);
   Serial.print(F(","));
   Serial.println(feedPos, 4);
+  emitProtocolPair(F("status"), F("target"), scanPos, feedPos);
+  emitProtocolText(F("status"), F("currentAction"), F("moving"));
+  emitProtocolText(F("status"), F("positionConfidence"), F("updating"));
   gesture(scanPos, feedPos);
   Serial.print(F("moveComplete\t"));
   Serial.print(scan, 4);
   Serial.print(F(","));
   Serial.println(feed, 4);
+  emitProtocolPair(F("event"), F("moveComplete"), scan, feed);
   return true;
 }
 
@@ -1147,13 +1234,44 @@ void finishPendingCommand() {
 }
 
 void failPendingCommand(const String& message) {
-  Serial.print(F("error\t"));
-  Serial.println(message);
+  emitProtocolText(F("event"), F("error"), message);
   clearPendingCommand();
 }
 
 void rejectPendingCommand() {
   failPendingCommand(String(F("command unavailable in state ")) + getStateName(machineState));
+}
+
+void moveToTargetAndReport(float targetScan, float targetFeed) {
+  type = "absolute";
+  Serial.print(F("moving to\t"));
+  Serial.print(targetScan);
+  Serial.print(F(","));
+  Serial.println(targetFeed);
+  emitProtocolPair(F("status"), F("target"), targetScan, targetFeed);
+  emitProtocolText(F("status"), F("currentAction"), F("moving"));
+  emitProtocolText(F("status"), F("positionConfidence"), F("updating"));
+  gesture(targetScan, targetFeed);
+  emitProtocolPair(F("event"), F("moveComplete"), scan, feed);
+  printPosition();
+}
+
+boolean stepMotorAndReport(byte axisIndex, long stepAmount) {
+  if ( !stepActiveMotionAxis(axisIndex, stepAmount) ) {
+    failPendingCommand(F("motor unavailable for current robot"));
+    return false;
+  }
+
+  char motorLabel = char('A' + axisIndex);
+  Serial.print(F("stepping motor "));
+  Serial.print(motorLabel);
+  Serial.print(F(": "));
+  Serial.println(stepAmount);
+
+  String action = F("stepping motor ");
+  action += motorLabel;
+  emitProtocolText(F("status"), F("currentAction"), action);
+  return true;
 }
 
 boolean handleSharedCommand() {
@@ -1174,18 +1292,22 @@ boolean handleSharedCommand() {
       minStepperPulse = int(pendingArgument1);
       Serial.print(F("speed set at\t"));
       Serial.println(int(pendingArgument1));
+      emitProtocolInt(F("status"), F("speedDelayMs"), long(pendingArgument1));
+      emitProtocolText(F("status"), F("currentAction"), F("speed updated"));
       finishPendingCommand();
       return true;
 
     case cmdMonitoringOn:
       monitoring = true;
       Serial.println(F("monitoring on"));
+      emitProtocolBool(F("status"), F("monitoring"), true);
       finishPendingCommand();
       return true;
 
     case cmdMonitoringOff:
       monitoring = false;
       Serial.println(F("monitoring off"));
+      emitProtocolBool(F("status"), F("monitoring"), false);
       finishPendingCommand();
       return true;
 
@@ -1226,13 +1348,7 @@ boolean handleManualMotionCommand() {
         failPendingCommand(F("quad motion not implemented"));
         return true;
       }
-      type = "absolute";
-      Serial.print(F("moving to\t"));
-      Serial.print(pendingArgument1);
-      Serial.print(",");
-      Serial.println(pendingArgument2);
-      gesture(pendingArgument1, pendingArgument2);
-      printPosition();
+      moveToTargetAndReport(pendingArgument1, pendingArgument2);
       finishPendingCommand();
       return true;
 
@@ -1255,26 +1371,104 @@ boolean handleManualMotionCommand() {
       return true;
 
     case cmdStepL:
+    case cmdStepA:
       if ( !motionImplementedForRobotKind(currentRobotKind) ) {
         failPendingCommand(F("quad motion not implemented"));
         return true;
       }
-      Serial.print(F("stepping left motor: "));
-      Serial.println(int(pendingArgument1));
-      stepL(int(pendingArgument1));
+      if ( !stepMotorAndReport(0, long(pendingArgument1)) ) return true;
       finishPendingCommand();
       return true;
 
     case cmdStepR:
+    case cmdStepB:
       if ( !motionImplementedForRobotKind(currentRobotKind) ) {
         failPendingCommand(F("quad motion not implemented"));
         return true;
       }
-      Serial.print(F("stepping right motor: "));
-      Serial.println(int(pendingArgument1));
-      stepR(int(pendingArgument1));
+      if ( !stepMotorAndReport(1, long(pendingArgument1)) ) return true;
       finishPendingCommand();
       return true;
+
+    case cmdStepC:
+      if ( !motionImplementedForRobotKind(currentRobotKind) ) {
+        failPendingCommand(F("quad motion not implemented"));
+        return true;
+      }
+      if ( !stepMotorAndReport(2, long(pendingArgument1)) ) return true;
+      finishPendingCommand();
+      return true;
+
+    case cmdStepD:
+      if ( !motionImplementedForRobotKind(currentRobotKind) ) {
+        failPendingCommand(F("quad motion not implemented"));
+        return true;
+      }
+      if ( !stepMotorAndReport(3, long(pendingArgument1)) ) return true;
+      finishPendingCommand();
+      return true;
+
+    case cmdMoveX:
+      if ( !motionImplementedForRobotKind(currentRobotKind) ) {
+        failPendingCommand(F("quad motion not implemented"));
+        return true;
+      }
+      moveToTargetAndReport(scan + pendingArgument1, feed);
+      finishPendingCommand();
+      return true;
+
+    case cmdMoveY:
+      if ( !motionImplementedForRobotKind(currentRobotKind) ) {
+        failPendingCommand(F("quad motion not implemented"));
+        return true;
+      }
+      moveToTargetAndReport(scan, feed + pendingArgument1);
+      finishPendingCommand();
+      return true;
+
+    case cmdMoveLeft: {
+      if ( !motionImplementedForRobotKind(currentRobotKind) ) {
+        failPendingCommand(F("quad motion not implemented"));
+        return true;
+      }
+      float distance = pendingArgument1 >= 0.0f ? pendingArgument1 : -pendingArgument1;
+      moveToTargetAndReport(scan - distance, feed);
+      finishPendingCommand();
+      return true;
+    }
+
+    case cmdMoveRight: {
+      if ( !motionImplementedForRobotKind(currentRobotKind) ) {
+        failPendingCommand(F("quad motion not implemented"));
+        return true;
+      }
+      float distance = pendingArgument1 >= 0.0f ? pendingArgument1 : -pendingArgument1;
+      moveToTargetAndReport(scan + distance, feed);
+      finishPendingCommand();
+      return true;
+    }
+
+    case cmdMoveUp: {
+      if ( !motionImplementedForRobotKind(currentRobotKind) ) {
+        failPendingCommand(F("quad motion not implemented"));
+        return true;
+      }
+      float distance = pendingArgument1 >= 0.0f ? pendingArgument1 : -pendingArgument1;
+      moveToTargetAndReport(scan, feed - distance);
+      finishPendingCommand();
+      return true;
+    }
+
+    case cmdMoveDown: {
+      if ( !motionImplementedForRobotKind(currentRobotKind) ) {
+        failPendingCommand(F("quad motion not implemented"));
+        return true;
+      }
+      float distance = pendingArgument1 >= 0.0f ? pendingArgument1 : -pendingArgument1;
+      moveToTargetAndReport(scan, feed + distance);
+      finishPendingCommand();
+      return true;
+    }
 
     case cmdSetType:
       if ( hasQueuedStreamMove() ) {
@@ -1378,12 +1572,14 @@ boolean handleManualMotionCommand() {
     case cmdPause:
       streamMoveQueuePaused = true;
       Serial.println(F("stream queue paused"));
+      emitProtocolText(F("status"), F("currentAction"), F("stream queue paused"));
       finishPendingCommand();
       return true;
 
     case cmdContinue:
       streamMoveQueuePaused = false;
       Serial.println(F("stream queue resumed"));
+      emitProtocolText(F("status"), F("currentAction"), F("stream queue resumed"));
       finishPendingCommand();
       return true;
 
@@ -1488,6 +1684,7 @@ void handleIdleState() {
       }
       if ( !initialiseSDQuietly() ) {
         Serial.println(F("SD unavailable"));
+        emitProtocolText(F("status"), F("currentAction"), F("sd unavailable"));
         enterState(noSD);
       } else {
         filePointer = int(pendingArgument1);
@@ -1513,6 +1710,7 @@ void handleIdleState() {
       enterState(drawing);
     } else {
       Serial.println(F("SD unavailable"));
+      emitProtocolText(F("status"), F("currentAction"), F("sd unavailable"));
       enterState(noSD);
     }
     return;
@@ -1633,6 +1831,7 @@ void handleAbortingState() {
   if ( dataFile ) {
     dataFile.close();
     Serial.println(F("closing dataFile"));
+    emitProtocolText(F("status"), F("currentAction"), F("closing file"));
   }
   drawingFileOpen = false;
   streamMoveQueueHead = 0;
@@ -1642,13 +1841,19 @@ void handleAbortingState() {
 
   if ( drawOutcome == drawFinished ) {
     Serial.println(F("drawing complete"));
+    emitProtocolText(F("status"), F("lastDrawResult"), F("complete"));
+    emitProtocolText(F("status"), F("currentAction"), F("drawing complete"));
     if ( motionImplementedForRobotKind(currentRobotKind) ) {
       returnToOrigin();
     }
   } else if ( drawOutcome == drawAborted ) {
     Serial.println(F("drawing aborted"));
+    emitProtocolText(F("status"), F("lastDrawResult"), F("aborted"));
+    emitProtocolText(F("status"), F("currentAction"), F("drawing aborted"));
   } else if ( drawOutcome == drawError ) {
     Serial.println(F("drawing error"));
+    emitProtocolText(F("status"), F("lastDrawResult"), F("error"));
+    emitProtocolText(F("status"), F("currentAction"), F("drawing error"));
   }
 
   gestureCount = 0;
@@ -2133,6 +2338,8 @@ void resetHome() {
   printCableTelemetry();
   Serial.println("_____________________________________");
   Serial.println("");
+  emitProtocolText(F("status"), F("currentAction"), F("home reset"));
+  printPosition();
   terminate();
 }
 
@@ -2142,11 +2349,15 @@ void returnToOrigin() {
     return;
   }
   Serial.println("returning to origin");
+  emitProtocolText(F("status"), F("currentAction"), F("returning to origin"));
+  emitProtocolText(F("status"), F("positionConfidence"), F("updating"));
   digitalWrite(LED4, HIGH);
   type = "absolute";
   gesture(0, 0);
   terminate();
   Serial.println("carriage at origin");
+  printPosition();
+  emitProtocolText(F("status"), F("currentAction"), F("at origin"));
   digitalWrite(LED4, LOW);
 }
 
@@ -2156,6 +2367,8 @@ void returnToHome() {
     return;
   }
   Serial.println("returning to home");
+  emitProtocolText(F("status"), F("currentAction"), F("returning to home"));
+  emitProtocolText(F("status"), F("positionConfidence"), F("updating"));
   type = "absolute";
   if ( currentRobotKind == robotKindFlatQuadTension ) {
     gesture(quadHomeScan, quadHomeFeed);
@@ -2164,6 +2377,8 @@ void returnToHome() {
   }
   terminate();
   Serial.println("carriage at home");
+  printPosition();
+  emitProtocolText(F("status"), F("currentAction"), F("at home"));
 }
 
 void printPosition() {
@@ -2178,10 +2393,13 @@ void printPosition() {
   Serial.print(scan);
   Serial.print(",");
   Serial.println(feed);
+  emitProtocolPair(F("status"), F("position"), scan, feed);
+  emitProtocolText(F("status"), F("positionConfidence"), F("reported"));
   Serial.println("lineLength A/B:");
   Serial.print(currentA);
   Serial.print(",");
   Serial.println(currentB);
+  emitProtocolPair(F("status"), F("lineLengths"), currentA, currentB);
   printCableTelemetry();
   Serial.println("_____________________________________");
 }

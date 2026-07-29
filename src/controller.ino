@@ -13,7 +13,7 @@ void controller() {
   if ( !command.length() ) return;
 
   if ( hasPendingCommand ) {
-    Serial.println(F("error\tbusy: command dropped"));
+    emitProtocolText(F("event"), F("error"), F("busy: command dropped"));
     return;
   }
 
@@ -48,7 +48,7 @@ void controller() {
     } else if ( advCommand.equals("contact") ) {
       pendingCommand = cmdSetContact;
     } else {
-      Serial.println(F("error\tInvalid command"));
+      emitProtocolText(F("event"), F("error"), F("Invalid command"));
       clearPendingCommand();
       return;
     }
@@ -72,6 +72,18 @@ void controller() {
     pendingCommand = cmdSetSpeed;
   } else if ( advCommand.equals("move") ) {
     pendingCommand = cmdMove;
+  } else if ( advCommand.equals("moveX") ) {
+    pendingCommand = cmdMoveX;
+  } else if ( advCommand.equals("moveY") ) {
+    pendingCommand = cmdMoveY;
+  } else if ( advCommand.equals("moveLeft") ) {
+    pendingCommand = cmdMoveLeft;
+  } else if ( advCommand.equals("moveRight") ) {
+    pendingCommand = cmdMoveRight;
+  } else if ( advCommand.equals("moveUp") ) {
+    pendingCommand = cmdMoveUp;
+  } else if ( advCommand.equals("moveDown") ) {
+    pendingCommand = cmdMoveDown;
   } else if ( advCommand.equals("type") ) {
     pendingCommand = cmdSetType;
   } else if ( advCommand.equals("mode") ) {
@@ -80,6 +92,14 @@ void controller() {
     pendingCommand = cmdSetAdjustment;
   } else if ( advCommand.equals("contact") ) {
     pendingCommand = cmdSetContact;
+  } else if ( advCommand.equals("stepA") ) {
+    pendingCommand = cmdStepA;
+  } else if ( advCommand.equals("stepB") ) {
+    pendingCommand = cmdStepB;
+  } else if ( advCommand.equals("stepC") ) {
+    pendingCommand = cmdStepC;
+  } else if ( advCommand.equals("stepD") ) {
+    pendingCommand = cmdStepD;
   } else if ( advCommand.equals("stepL") ) {
     pendingCommand = cmdStepL;
   } else if ( advCommand.equals("stepR") ) {
@@ -117,7 +137,7 @@ void controller() {
   } else if ( command.equals("clearEEPROM") ) {
     pendingCommand = cmdClearEEPROM;
   } else {
-    Serial.println(F("error\tInvalid command"));
+    emitProtocolText(F("event"), F("error"), F("Invalid command"));
     clearPendingCommand();
     return;
   }

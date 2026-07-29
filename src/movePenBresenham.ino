@@ -27,6 +27,7 @@ const boolean HANGING_VBOT_DIR_INVERTED[HANGING_VBOT_AXIS_COUNT] = {
 // Y  step/dir/enable: 60/61/56
 // Z  step/dir/enable: 46/48/62
 // E0 step/dir/enable: 26/28/24
+// E1 step/dir/enable: 36/34/30
 const int RAMPS_14_X_STEP_PIN = 54;
 const int RAMPS_14_X_DIR_PIN = 55;
 const int RAMPS_14_X_ENABLE_PIN = 38;
@@ -39,27 +40,30 @@ const int RAMPS_14_Z_ENABLE_PIN = 62;
 const int RAMPS_14_E0_STEP_PIN = 26;
 const int RAMPS_14_E0_DIR_PIN = 28;
 const int RAMPS_14_E0_ENABLE_PIN = 24;
+const int RAMPS_14_E1_STEP_PIN = 36;
+const int RAMPS_14_E1_DIR_PIN = 34;
+const int RAMPS_14_E1_ENABLE_PIN = 30;
 
-// Cable A/B/C/D map to the RAMPS X/Y/Z/E0 sockets.
+// Cable A/B/C/D map to the RAMPS X/Y/E0/E1 sockets.
 const int FLAT_QUAD_DIR_PINS[FLAT_QUAD_AXIS_COUNT] = {
   RAMPS_14_X_DIR_PIN,
   RAMPS_14_Y_DIR_PIN,
-  RAMPS_14_Z_DIR_PIN,
-  RAMPS_14_E0_DIR_PIN
+  RAMPS_14_E0_DIR_PIN,
+  RAMPS_14_E1_DIR_PIN
 };
 
 const int FLAT_QUAD_STEP_PINS[FLAT_QUAD_AXIS_COUNT] = {
   RAMPS_14_X_STEP_PIN,
   RAMPS_14_Y_STEP_PIN,
-  RAMPS_14_Z_STEP_PIN,
-  RAMPS_14_E0_STEP_PIN
+  RAMPS_14_E0_STEP_PIN,
+  RAMPS_14_E1_STEP_PIN
 };
 
 const int FLAT_QUAD_ENABLE_PINS[FLAT_QUAD_AXIS_COUNT] = {
   RAMPS_14_X_ENABLE_PIN,
   RAMPS_14_Y_ENABLE_PIN,
-  RAMPS_14_Z_ENABLE_PIN,
-  RAMPS_14_E0_ENABLE_PIN
+  RAMPS_14_E0_ENABLE_PIN,
+  RAMPS_14_E1_ENABLE_PIN
 };
 
 // Keep these false until the physical spool orientations are verified on hardware.
@@ -424,6 +428,16 @@ void runBresenhamSteps(long leftSteps, long rightSteps) {
     rightSteps
   };
   runMotionSteps(axisSteps, HANGING_VBOT_AXIS_COUNT);
+}
+
+boolean stepActiveMotionAxis(byte axisIndex, long axisSteps) {
+  if ( axisIndex >= activeMotionAxisCount ) return false;
+  if ( axisSteps == 0 ) return true;
+
+  long stepPlan[MAX_MOTION_AXES] = {0, 0, 0, 0};
+  stepPlan[axisIndex] = axisSteps;
+  runMotionSteps(stepPlan, activeMotionAxisCount);
+  return true;
 }
 
 float getQuadCableCompensation(byte axisIndex) {

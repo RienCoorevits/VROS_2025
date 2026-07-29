@@ -1,0 +1,12 @@
+# VROS firmware repo defaults for Codex.
+# Keep the main repo sandboxed while allowing work in the sibling Control Station
+# repo and the shared Obsidian vault during the same session.
+
+sandbox_mode = "workspace-write"
+approval_policy = "on-request"
+
+[sandbox_workspace_write]
+writable_roots = [
+  "/Users/u0127995/Documents/02_DEVELOPER/VROS Control Station",
+  "/Users/u0127995/Documents/03_VAULTS/VBOT Vault",
+]
