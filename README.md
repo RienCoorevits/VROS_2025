@@ -59,6 +59,7 @@ The firmware still contains a compiled default robot profile, but those values a
 - line resolution used for geometric resampling before Bresenham step scheduling
 - home position
 - steps-per-centimeter conversion
+- RAMPS microstep scaling
 - left/right coil compensation
 
 ## Project Structure
@@ -96,7 +97,7 @@ The firmware now exposes a structured `vros` compatibility handshake for the Con
 Current firmware banner:
 
 ```text
-VROS_2.5.11_caseController
+VROS_2.5.16_caseController
 ```
 
 Current host protocol version:
@@ -137,7 +138,7 @@ Representative lines:
 
 ```text
 vros	compat	protocolVersion	1
-vros	compat	firmwareVersion	VROS_2.5.11_caseController
+vros	compat	firmwareVersion	VROS_2.5.16_caseController
 vros	status	state	idle
 vros	status	position	21.0000,31.0000
 vros	config	robotSetupStatus	valid
@@ -155,7 +156,8 @@ Important compatibility rule:
 The firmware now maintains two EEPROM concepts:
 
 1. Robot setup block
-2. Position block
+2. Speed settings block
+3. Position block
 
 Robot setup block:
 
@@ -163,6 +165,13 @@ Robot setup block:
 - is versioned
 - is CRC-protected
 - is read by the Control Station after connection
+
+Speed settings block:
+
+- stores the active step pulse and delay values used by `setSpeed`
+- is versioned
+- is CRC-protected
+- is loaded during boot before the machine enters `idle` or `noSD`
 
 Position block:
 
@@ -184,6 +193,7 @@ Robot setup fields now persisted in EEPROM:
 - `leftCoilFeed`
 - `rightCoilFeed`
 - `stepsToCm`
+- `microstepResolution`
 - `quadHomeScan`
 - `quadHomeFeed`
 - `quadCableAFeed`
@@ -244,8 +254,9 @@ These commands were added or formalized for Control Station support:
 
 ```text
 robotSetupGet
-robotSetupWrite	<motorDistance>,<scanOffset>,<feedOffset>,<height>,<lineResolution>,<homePosition>,<leftCoilFeed>,<rightCoilFeed>,<stepsToCm>
-robotSetupWrite	robotKind=flat_quad_tension,width=42,height=50,lineResolution=0.5,stepsToCm=35,quadHomeScan=21,quadHomeFeed=25,quadCableAFeed=1,quadCableBFeed=1,quadCableCFeed=1,quadCableDFeed=1,quadDrawLiftValue=0,quadTravelLiftValue=1
+robotSetupWrite	<motorDistance>,<scanOffset>,<feedOffset>,<height>,<lineResolution>,<homePosition>,<leftCoilFeed>,<rightCoilFeed>,<stepsToCm>[,<microstepResolution>]
+robotSetupWrite	robotKind=hanging_vbot,motorDistance=62,scanOffset=10,feedOffset=20,height=50,lineResolution=0.5,homePosition=82,leftCoilFeed=1,rightCoilFeed=0.997,stepsToCm=35,microstepResolution=0.0625
+robotSetupWrite	robotKind=flat_quad_tension,width=42,height=50,lineResolution=0.5,stepsToCm=35,microstepResolution=0.0625,quadHomeScan=21,quadHomeFeed=25,quadCableAFeed=1,quadCableBFeed=1,quadCableCFeed=1,quadCableDFeed=1,quadDrawLiftValue=0,quadTravelLiftValue=1
 robotSetupLoad
 robotSetupDefaults
 clearEEPROM
@@ -255,11 +266,11 @@ contact	draw|travel
 Command intent:
 
 - `robotSetupGet`: report EEPROM validity and the active runtime setup
-- `robotSetupWrite`: apply a full setup payload and persist it; both the legacy V-bot CSV payload and the newer schema-aware `key=value` payload are accepted
+- `robotSetupWrite`: apply a full setup payload and persist it; both the legacy V-bot CSV payload and the newer schema-aware `key=value` payload are accepted, and both can now carry `microstepResolution`
 - `robotSetupLoad`: reload the EEPROM setup block into runtime state
 - `robotSetupDefaults`: write compiled defaults into EEPROM and make them active
 - `clearEEPROM`: wipe the full EEPROM, including robot setup and saved carriage position
-- `contact`: update the current binary contact state for telemetry and future quad lift handling
+- `contact`: update the current binary contact state for telemetry; physical quad lift handling is still future work
 
 After setup-changing commands, the firmware also reports current position so the Control Station preview can update immediately.
 
@@ -273,12 +284,13 @@ The firmware now has a first implementation pass for the flat quad robot:
 - `robotKind`, `contactState`, and four-cable telemetry reporting
 - `motionSupport` and `motionBackend` reporting so the desktop can decide whether quad streaming is available
 - solved `x/y` reporting through the same position protocol used by the Control Station
-- a generic multi-axis pulse planner that can drive either the existing hanging-bot backend or a future four-axis quad backend
+- a generic multi-axis pulse planner that now drives both the hanging two-axis backend and the flat-quad four-axis backend
 
 Important current limit:
 
 - the current default build assumes a RAMPS 1.4 map that routes quad cables A/B/C/D through the X/Y/E0/E1 driver sockets
 - per-motor direction inversion may still need tuning on the real machine
+- quad `contact` currently affects state and telemetry only; it does not yet drive a physical draw/travel actuator
 
 ## State Machine
 
@@ -330,12 +342,18 @@ stepA,<amount>
 stepB,<amount>
 stepC,<amount>
 stepD,<amount>
+stepAll,<amount>
 stepL,<amount>
 stepR,<amount>
+motors on
+motors off
 setSpeed,<delay>
+getSpeed
+saveSpeed
 outlineCanvas
 returnToOrigin
 returnToHome
+feedToHome
 resetHome
 position
 abort
@@ -357,14 +375,21 @@ State-sensitive commands:
 - `pause` is only accepted while `drawing`
 - `continue` is only accepted while `pausing`
 - `abort` is only accepted while `drawing` or `pausing`
-- manual commands such as `move`, `moveX`, `moveY`, `moveLeft`, `moveRight`, `moveUp`, `moveDown`, `stepA`, `stepB`, `stepC`, `stepD`, `stepL`, `stepR`, `returnToOrigin`, and `position` are accepted in non-drawing states
+- manual commands such as `move`, `moveX`, `moveY`, `moveLeft`, `moveRight`, `moveUp`, `moveDown`, `stepA`, `stepB`, `stepC`, `stepD`, `stepAll`, `stepL`, `stepR`, `motors on`, `motors off`, `returnToOrigin`, `returnToHome`, `feedToHome`, `resetHome`, and `position` are accepted in non-drawing states
 
 Jog and debug notes:
 
 - `moveX` and `moveY` are relative jogs in centimeters from the current logical position
 - `moveLeft`, `moveRight`, `moveUp`, and `moveDown` are directional jog aliases; in this coordinate system, `up` means negative feed and `down` means positive feed
 - `stepL` and `stepR` remain compatibility aliases for `stepA` and `stepB`
-- raw `step*` commands are intended for wiring and direction bring-up; they do not update the logical scan/feed position model, so return the carriage to a known pose and run `resetHome` before trusting `position` or later absolute moves
+- `stepAll` runs the same signed raw step amount on every active motion axis at once; that means both axes on the hanging V-bot path and all four axes on the flat quad path
+- `setSpeed,<delay>` updates the active step pulse/delay timing directly; on the flat quad path this is the authoritative operator speed control because the legacy panel speed knob is not used there
+- `getSpeed` reports the current active speed delay value as `vros	status	speedDelayMs	...`
+- `saveSpeed` writes the current active speed delay/pulse values to EEPROM so they are restored after power-up; on the hanging V-bot path the A15 speed knob still overrides that live value once the idle/drawing loop polls it again
+- `feedToHome` is a flat-quad setup helper for the fully-wound starting condition; it feeds the configured home cable lengths using the same global step pulse/delay timing as other coordinated motion, then leaves the logical position unchanged so the operator can attach/place the carriage and finish with `resetHome`
+- `motors on` and `motors off` control stepper enable pins for debugging when the active robot exposes configurable motor enables; the current RAMPS-backed flat quad path does, while the hanging V-bot path does not
+- the next stepped or coordinated move automatically re-enables those motors before pulsing, so `motors off` is mainly a temporary release/debug action
+- raw `step*` commands and `feedToHome` do not update the logical scan/feed position model, so return the carriage to a known pose and run `resetHome` before trusting `position` or later absolute moves
 
 ## Streaming Drawings From The Repo
 

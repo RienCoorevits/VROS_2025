@@ -8,8 +8,8 @@
 //https://tangrams.github.io/heightmapper
 
 const char FIRMWARE_PRODUCT_NAME[] = "VROS_caseController";
-const char FIRMWARE_SEMVER[] = "2.5.11";
-const char FIRMWARE_COMPAT_ID[] = "VROS_2.5.11_caseController";
+const char FIRMWARE_SEMVER[] = "2.5.16";
+const char FIRMWARE_COMPAT_ID[] = "VROS_2.5.16_caseController";
 const byte HOST_PROTOCOL_VERSION = 1;
 
 
@@ -54,6 +54,7 @@ enum MotionBackendId {
 const byte MAX_MOTION_AXES = 4;
 const byte HANGING_VBOT_AXIS_COUNT = 2;
 const byte FLAT_QUAD_AXIS_COUNT = 4;
+extern byte activeMotionAxisCount;
 
 struct LegacyRobotSetupPayloadV1 {
   float motorDistance;
@@ -67,7 +68,7 @@ struct LegacyRobotSetupPayloadV1 {
   float stepsToCm;
 };
 
-struct RobotSetupPayload {
+struct LegacyRobotSetupPayloadV2 {
   byte robotKind;
   byte reserved0[3];
   float motorDistance;
@@ -90,6 +91,30 @@ struct RobotSetupPayload {
   float quadTravelLiftValue;
 };
 
+struct RobotSetupPayload {
+  byte robotKind;
+  byte reserved0[3];
+  float motorDistance;
+  float scanOffset;
+  float feedOffset;
+  float width;
+  float height;
+  float lineResolution;
+  float homePosition;
+  float stepsToCm;
+  float microstepResolution;
+  float leftCoilFeed;
+  float rightCoilFeed;
+  float quadHomeScan;
+  float quadHomeFeed;
+  float quadCableAFeed;
+  float quadCableBFeed;
+  float quadCableCFeed;
+  float quadCableDFeed;
+  float quadDrawLiftValue;
+  float quadTravelLiftValue;
+};
+
 struct LegacyRobotSetupBlockV1 {
   unsigned long magic;
   byte version;
@@ -100,6 +125,16 @@ struct LegacyRobotSetupBlockV1 {
   byte reserved[16];
 };
 
+struct LegacyRobotSetupBlockV2 {
+  unsigned long magic;
+  byte version;
+  byte payloadSize;
+  unsigned int flags;
+  unsigned long crc32;
+  LegacyRobotSetupPayloadV2 payload;
+  byte reserved[8];
+};
+
 struct RobotSetupBlock {
   unsigned long magic;
   byte version;
@@ -107,7 +142,7 @@ struct RobotSetupBlock {
   unsigned int flags;
   unsigned long crc32;
   RobotSetupPayload payload;
-  byte reserved[8];
+  byte reserved[4];
 };
 
 struct RobotSetupBlockHeader {
@@ -125,15 +160,53 @@ struct PositionBlock {
   unsigned long crc32;
 };
 
+struct SpeedSettingsPayload {
+  unsigned int stepperDelay;
+  unsigned int stepperPulse;
+};
+
+struct SpeedSettingsBlock {
+  unsigned long magic;
+  byte version;
+  byte payloadSize;
+  unsigned int flags;
+  unsigned long crc32;
+  SpeedSettingsPayload payload;
+};
+
 const unsigned long ROBOT_SETUP_MAGIC = 0x56525331UL;
-const byte LEGACY_ROBOT_SETUP_VERSION = 1;
-const byte ROBOT_SETUP_VERSION = 2;
+const byte LEGACY_ROBOT_SETUP_VERSION_V1 = 1;
+const byte LEGACY_ROBOT_SETUP_VERSION_V2 = 2;
+const byte ROBOT_SETUP_VERSION = 3;
 const int ROBOT_SETUP_EEPROM_ADDRESS = 0;
+const unsigned long SPEED_SETTINGS_MAGIC = 0x53504431UL;
+const byte SPEED_SETTINGS_VERSION = 1;
+const int SPEED_SETTINGS_EEPROM_ADDRESS = 96;
 const unsigned long POSITION_MAGIC = 0x504F5331UL;
 const int POSITION_EEPROM_ADDRESS = 128;
 const int LEGACY_POSITION_BLOCK_EEPROM_ADDRESS = 64;
 const int LEGACY_FEED_EEPROM_ADDRESS = 0;
 const int LEGACY_SCAN_EEPROM_ADDRESS = 15;
+static_assert(
+  SPEED_SETTINGS_EEPROM_ADDRESS >= ROBOT_SETUP_EEPROM_ADDRESS + sizeof(RobotSetupBlock),
+  "Speed settings EEPROM address overlaps robot setup block"
+);
+static_assert(
+  SPEED_SETTINGS_EEPROM_ADDRESS + sizeof(SpeedSettingsBlock) <= POSITION_EEPROM_ADDRESS,
+  "Speed settings EEPROM block overlaps position block"
+);
+const unsigned int DEFAULT_STEPPER_DELAY = 50;
+const unsigned int DEFAULT_STEPPER_PULSE = 50;
+const float DEFAULT_MICROSTEP_RESOLUTION = 0.0625f;
+const float MICROSTEP_RESOLUTION_OPTIONS[] = {
+  1.0f,
+  0.5f,
+  0.25f,
+  0.125f,
+  0.0625f,
+  0.03125f
+};
+const byte MICROSTEP_RESOLUTION_OPTION_COUNT = sizeof(MICROSTEP_RESOLUTION_OPTIONS) / sizeof(MICROSTEP_RESOLUTION_OPTIONS[0]);
 
 const RobotSetupPayload DEFAULT_ROBOT_SETUP = {
   robotKindHangingVBot,
@@ -146,6 +219,7 @@ const RobotSetupPayload DEFAULT_ROBOT_SETUP = {
   0.50f,
   82.00f,
   35.00f,
+  DEFAULT_MICROSTEP_RESOLUTION,
   1.00f,
   0.997f,
   21.00f,
@@ -169,6 +243,7 @@ const RobotSetupPayload DEFAULT_QUAD_ROBOT_SETUP = {
   0.50f,
   0.00f,
   35.00f,
+  DEFAULT_MICROSTEP_RESOLUTION,
   1.00f,
   1.00f,
   21.00f,
@@ -220,8 +295,8 @@ float currentB;
 float currentCableLengths[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 
 //speed vars
-int minStepperDelay = 50; //200
-int minStepperPulse = 50;
+int minStepperDelay = DEFAULT_STEPPER_DELAY; //200
+int minStepperPulse = DEFAULT_STEPPER_PULSE;
 
 
 //Drawing vars
@@ -255,6 +330,9 @@ enum CommandType {
   cmdStepB,
   cmdStepC,
   cmdStepD,
+  cmdStepAll,
+  cmdMotorsOn,
+  cmdMotorsOff,
   cmdMoveX,
   cmdMoveY,
   cmdMoveLeft,
@@ -268,6 +346,7 @@ enum CommandType {
   cmdOutlineCanvas,
   cmdReturnToOrigin,
   cmdReturnToHome,
+  cmdFeedToHome,
   cmdResetHome,
   cmdTerminate,
   cmdMonitoringOn,
@@ -276,6 +355,8 @@ enum CommandType {
   cmdPause,
   cmdContinue,
   cmdPosition,
+  cmdGetSpeed,
+  cmdSaveSpeed,
   cmdRetrySD,
   cmdRobotSetupGet,
   cmdRobotSetupWrite,
@@ -318,8 +399,7 @@ boolean lowerBound = false;
 boolean leftBound = true;
 boolean rightBound = true;
 String adjustmentType = "none";
-// Match this to the RAMPS MS jumper mode on every active driver socket.
-const float microstepResolution = 0.0625f;
+float microstepResolution = DEFAULT_ROBOT_SETUP.microstepResolution;
 
 unsigned long crc32Update(unsigned long crc, const byte* data, unsigned int length) {
   crc = ~crc;
@@ -344,6 +424,10 @@ unsigned long calculateLegacyRobotSetupCRC(const LegacyRobotSetupPayloadV1& payl
   return crc32Update(0UL, (const byte*)&payload, sizeof(LegacyRobotSetupPayloadV1));
 }
 
+unsigned long calculateLegacyRobotSetupCRC(const LegacyRobotSetupPayloadV2& payload) {
+  return crc32Update(0UL, (const byte*)&payload, sizeof(LegacyRobotSetupPayloadV2));
+}
+
 unsigned long calculatePositionCRC(long scanX100Value, long feedX100Value) {
   unsigned long crc = 0UL;
   crc = crc32Update(crc, (const byte*)&scanX100Value, sizeof(long));
@@ -351,8 +435,22 @@ unsigned long calculatePositionCRC(long scanX100Value, long feedX100Value) {
   return crc;
 }
 
+unsigned long calculateSpeedSettingsCRC(const SpeedSettingsPayload& payload) {
+  unsigned long crc = 0UL;
+  crc = crc32Update(crc, (const byte*)&payload.stepperDelay, sizeof(payload.stepperDelay));
+  crc = crc32Update(crc, (const byte*)&payload.stepperPulse, sizeof(payload.stepperPulse));
+  return crc;
+}
+
 boolean validFloatRange(float value, float minValue, float maxValue) {
   return value >= minValue && value <= maxValue;
+}
+
+boolean validMicrostepResolution(float value) {
+  for ( byte index = 0; index < MICROSTEP_RESOLUTION_OPTION_COUNT; index++ ) {
+    if ( fabsf(value - MICROSTEP_RESOLUTION_OPTIONS[index]) < 0.00001f ) return true;
+  }
+  return false;
 }
 
 boolean failRobotSetupPayloadParse(const String& detail) {
@@ -502,6 +600,10 @@ void normalizeRobotSetup(RobotSetupPayload& payload) {
 }
 
 String describeRobotSetupValidationError(const RobotSetupPayload& payload) {
+  if ( !validMicrostepResolution(payload.microstepResolution) ) {
+    return F("microstepResolution must be one of 1, 0.5, 0.25, 0.125, 0.0625, 0.03125");
+  }
+
   if ( payload.robotKind == robotKindHangingVBot ) {
     float computedWidth = payload.motorDistance - payload.scanOffset * 2.0f;
     if ( !validFloatRange(payload.motorDistance, 1.0f, 500.0f) ) return String(F("motorDistance ")) + formatFloatRangeDetail(payload.motorDistance, 1.0f, 500.0f);
@@ -561,6 +663,7 @@ void applyRobotSetup(const RobotSetupPayload& payload) {
   leftCoilFeed = robotSetup.leftCoilFeed;
   rightCoilFeed = robotSetup.rightCoilFeed;
   stepsToCmBase = robotSetup.stepsToCm;
+  microstepResolution = robotSetup.microstepResolution;
   stepsToCm = stepsToCmBase / microstepResolution;
   quadHomeScan = robotSetup.quadHomeScan;
   quadHomeFeed = robotSetup.quadHomeFeed;
@@ -605,6 +708,37 @@ RobotSetupPayload migrateLegacyRobotSetup(const LegacyRobotSetupPayloadV1& legac
   return payload;
 }
 
+RobotSetupPayload migrateLegacyRobotSetupV2(const LegacyRobotSetupPayloadV2& legacyPayload) {
+  RobotKindId robotKind = (
+    legacyPayload.robotKind == robotKindFlatQuadTension
+    ? robotKindFlatQuadTension
+    : robotKindHangingVBot
+  );
+  RobotSetupPayload payload = defaultRobotSetupForKind(robotKind);
+  payload.robotKind = byte(robotKind);
+  payload.motorDistance = legacyPayload.motorDistance;
+  payload.scanOffset = legacyPayload.scanOffset;
+  payload.feedOffset = legacyPayload.feedOffset;
+  payload.width = legacyPayload.width;
+  payload.height = legacyPayload.height;
+  payload.lineResolution = legacyPayload.lineResolution;
+  payload.homePosition = legacyPayload.homePosition;
+  payload.stepsToCm = legacyPayload.stepsToCm;
+  payload.microstepResolution = DEFAULT_MICROSTEP_RESOLUTION;
+  payload.leftCoilFeed = legacyPayload.leftCoilFeed;
+  payload.rightCoilFeed = legacyPayload.rightCoilFeed;
+  payload.quadHomeScan = legacyPayload.quadHomeScan;
+  payload.quadHomeFeed = legacyPayload.quadHomeFeed;
+  payload.quadCableAFeed = legacyPayload.quadCableAFeed;
+  payload.quadCableBFeed = legacyPayload.quadCableBFeed;
+  payload.quadCableCFeed = legacyPayload.quadCableCFeed;
+  payload.quadCableDFeed = legacyPayload.quadCableDFeed;
+  payload.quadDrawLiftValue = legacyPayload.quadDrawLiftValue;
+  payload.quadTravelLiftValue = legacyPayload.quadTravelLiftValue;
+  normalizeRobotSetup(payload);
+  return payload;
+}
+
 boolean loadRobotSetupFromEEPROM() {
   RobotSetupBlockHeader header;
   EEPROM.get(ROBOT_SETUP_EEPROM_ADDRESS, header);
@@ -623,7 +757,21 @@ boolean loadRobotSetupFromEEPROM() {
   }
 
   if (
-    header.version == LEGACY_ROBOT_SETUP_VERSION
+    header.version == LEGACY_ROBOT_SETUP_VERSION_V2
+    && header.payloadSize == sizeof(LegacyRobotSetupPayloadV2)
+  ) {
+    LegacyRobotSetupBlockV2 legacyBlock;
+    EEPROM.get(ROBOT_SETUP_EEPROM_ADDRESS, legacyBlock);
+    if ( legacyBlock.crc32 != calculateLegacyRobotSetupCRC(legacyBlock.payload) ) return false;
+
+    RobotSetupPayload migrated = migrateLegacyRobotSetupV2(legacyBlock.payload);
+    if ( !validateRobotSetup(migrated) ) return false;
+    applyRobotSetup(migrated);
+    return true;
+  }
+
+  if (
+    header.version == LEGACY_ROBOT_SETUP_VERSION_V1
     && header.payloadSize == sizeof(LegacyRobotSetupPayloadV1)
   ) {
     LegacyRobotSetupBlockV1 legacyBlock;
@@ -719,6 +867,51 @@ void savePositionToEEPROM() {
   EEPROM.put(POSITION_EEPROM_ADDRESS, block);
 }
 
+void applySpeedSettings(const SpeedSettingsPayload& payload) {
+  minStepperDelay = int(payload.stepperDelay);
+  minStepperPulse = int(payload.stepperPulse);
+  if ( minStepperDelay < 1 ) minStepperDelay = 1;
+  if ( minStepperPulse < 1 ) minStepperPulse = 1;
+}
+
+void applyDefaultSpeedSettings() {
+  SpeedSettingsPayload payload = {
+    DEFAULT_STEPPER_DELAY,
+    DEFAULT_STEPPER_PULSE
+  };
+  applySpeedSettings(payload);
+}
+
+boolean validateSpeedSettings(const SpeedSettingsPayload& payload) {
+  if ( payload.stepperDelay < 1 || payload.stepperDelay > 60000U ) return false;
+  if ( payload.stepperPulse < 1 || payload.stepperPulse > 60000U ) return false;
+  return true;
+}
+
+boolean loadSpeedSettingsFromEEPROM() {
+  SpeedSettingsBlock block;
+  EEPROM.get(SPEED_SETTINGS_EEPROM_ADDRESS, block);
+  if ( block.magic != SPEED_SETTINGS_MAGIC ) return false;
+  if ( block.version != SPEED_SETTINGS_VERSION ) return false;
+  if ( block.payloadSize != sizeof(SpeedSettingsPayload) ) return false;
+  if ( block.crc32 != calculateSpeedSettingsCRC(block.payload) ) return false;
+  if ( !validateSpeedSettings(block.payload) ) return false;
+  applySpeedSettings(block.payload);
+  return true;
+}
+
+void saveSpeedSettingsToEEPROM() {
+  SpeedSettingsBlock block;
+  block.magic = SPEED_SETTINGS_MAGIC;
+  block.version = SPEED_SETTINGS_VERSION;
+  block.payloadSize = sizeof(SpeedSettingsPayload);
+  block.flags = 0;
+  block.payload.stepperDelay = (unsigned int)minStepperDelay;
+  block.payload.stepperPulse = (unsigned int)minStepperPulse;
+  block.crc32 = calculateSpeedSettingsCRC(block.payload);
+  EEPROM.put(SPEED_SETTINGS_EEPROM_ADDRESS, block);
+}
+
 void clearAllEEPROM() {
   for ( unsigned int address = 0; address < EEPROM.length(); address++ ) {
     EEPROM.update(address, 0xFF);
@@ -808,6 +1001,16 @@ void printCableTelemetry() {
   }
 }
 
+void emitSpeedStatus() {
+  emitProtocolInt(F("status"), F("speedDelayMs"), long(minStepperDelay));
+}
+
+void printSpeed() {
+  Serial.print(F("speedDelayMs\t"));
+  Serial.println(minStepperDelay);
+  emitSpeedStatus();
+}
+
 void printRobotSetup() {
   emitProtocolText(F("status"), F("robotKind"), getRobotKindToken(currentRobotKind));
   emitProtocolText(F("status"), F("contactState"), getContactStateToken(contactState));
@@ -828,6 +1031,7 @@ void printRobotSetup() {
   emitProtocolFloat(F("config"), F("robotSetup.leftCoilFeed"), leftCoilFeed);
   emitProtocolFloat(F("config"), F("robotSetup.rightCoilFeed"), rightCoilFeed);
   emitProtocolFloat(F("config"), F("robotSetup.stepsToCm"), stepsToCmBase);
+  emitProtocolFloat(F("config"), F("robotSetup.microstepResolution"), microstepResolution, 5);
   emitProtocolFloat(F("config"), F("robotSetup.quadHomeScan"), quadHomeScan);
   emitProtocolFloat(F("config"), F("robotSetup.quadHomeFeed"), quadHomeFeed);
   emitProtocolFloat(F("config"), F("robotSetup.quadCableAFeed"), quadCableAFeed);
@@ -836,6 +1040,7 @@ void printRobotSetup() {
   emitProtocolFloat(F("config"), F("robotSetup.quadCableDFeed"), quadCableDFeed);
   emitProtocolFloat(F("config"), F("robotSetup.quadDrawLiftValue"), quadDrawLiftValue);
   emitProtocolFloat(F("config"), F("robotSetup.quadTravelLiftValue"), quadTravelLiftValue);
+  emitSpeedStatus();
 }
 
 boolean parseRobotSetupWritePayload(const String& rawValue, RobotSetupPayload& payload) {
@@ -865,12 +1070,17 @@ boolean parseRobotSetupWritePayload(const String& rawValue, RobotSetupPayload& p
     payload.leftCoilFeed = values[6].toFloat();
     payload.rightCoilFeed = values[7].toFloat();
     payload.stepsToCm = values[8].toFloat();
+    String legacyMicrostepValue = splitString(rawValue, ',', 9);
+    legacyMicrostepValue.trim();
+    if ( legacyMicrostepValue.length() ) {
+      payload.microstepResolution = legacyMicrostepValue.toFloat();
+    }
     normalizeRobotSetup(payload);
     return validateRobotSetup(payload);
   }
 
   RobotKindId requestedKind = currentRobotKind;
-  for ( int index = 0; index < 24; index++ ) {
+  for ( int index = 0; index < 32; index++ ) {
     String assignment = splitString(rawValue, ',', index);
     assignment.trim();
     if ( !assignment.length() ) break;
@@ -890,7 +1100,7 @@ boolean parseRobotSetupWritePayload(const String& rawValue, RobotSetupPayload& p
   }
 
   payload = defaultRobotSetupForKind(requestedKind);
-  for ( int index = 0; index < 24; index++ ) {
+  for ( int index = 0; index < 32; index++ ) {
     String assignment = splitString(rawValue, ',', index);
     assignment.trim();
     if ( !assignment.length() ) break;
@@ -933,6 +1143,8 @@ boolean parseRobotSetupWritePayload(const String& rawValue, RobotSetupPayload& p
       payload.homePosition = fieldValue.toFloat();
     } else if ( fieldName == "stepsToCm" ) {
       payload.stepsToCm = fieldValue.toFloat();
+    } else if ( fieldName == "microstepResolution" ) {
+      payload.microstepResolution = fieldValue.toFloat();
     } else if ( fieldName == "leftCoilFeed" ) {
       payload.leftCoilFeed = fieldValue.toFloat();
     } else if ( fieldName == "rightCoilFeed" ) {
@@ -995,6 +1207,10 @@ void setup() {
     applyDefaultRobotSetup();
   }
 
+  if ( !loadSpeedSettingsFromEEPROM() ) {
+    applyDefaultSpeedSettings();
+  }
+
   if ( !loadPositionFromEEPROM() ) {
     savePositionToEEPROM();
   }
@@ -1038,6 +1254,7 @@ void setup() {
   Serial.println(microstepResolution, 5);
   Serial.print(F("stepperDelay:\t"));
   Serial.println(minStepperDelay);
+  emitSpeedStatus();
   Serial.println("");
   printRobotSetup();
   Serial.println("");
@@ -1080,17 +1297,23 @@ void setup() {
   Serial.println(F(">stepB, amount"));
   Serial.println(F(">stepC, amount"));
   Serial.println(F(">stepD, amount"));
+  Serial.println(F(">stepAll, amount"));
   Serial.println(F(">stepL, amount"));
   Serial.println(F(">stepR, amount"));
+  Serial.println(F(">motors on/off"));
   Serial.println(F(">monitoring on/off"));
   Serial.println(F(">returnToOrigin"));
   Serial.println(F(">outlineCanvas"));
   Serial.println(F(">resetHome"));
   Serial.println(F(">returnToHome"));
+  Serial.println(F(">feedToHome"));
   Serial.println(F(">position"));
+  Serial.println(F(">getSpeed"));
+  Serial.println(F(">saveSpeed"));
   Serial.println(F(">robotSetupGet"));
-  Serial.println(F(">robotSetupWrite\\t62,10,20,50,0.5,82,1,0.997,35"));
-  Serial.println(F(">robotSetupWrite\\trobotKind=flat_quad_tension,scanOffset=0,feedOffset=0,width=42,height=50,lineResolution=0.5,stepsToCm=35,quadHomeScan=21,quadHomeFeed=25,quadCableAFeed=1,quadCableBFeed=1,quadCableCFeed=1,quadCableDFeed=1,quadDrawLiftValue=0,quadTravelLiftValue=1"));
+  Serial.println(F(">robotSetupWrite\\t62,10,20,50,0.5,82,1,0.997,35[,0.0625]"));
+  Serial.println(F(">robotSetupWrite\\trobotKind=hanging_vbot,motorDistance=62,scanOffset=10,feedOffset=20,height=50,lineResolution=0.5,homePosition=82,leftCoilFeed=1,rightCoilFeed=0.997,stepsToCm=35,microstepResolution=0.0625"));
+  Serial.println(F(">robotSetupWrite\\trobotKind=flat_quad_tension,scanOffset=0,feedOffset=0,width=42,height=50,lineResolution=0.5,stepsToCm=35,microstepResolution=0.0625,quadHomeScan=21,quadHomeFeed=25,quadCableAFeed=1,quadCableBFeed=1,quadCableCFeed=1,quadCableDFeed=1,quadDrawLiftValue=0,quadTravelLiftValue=1"));
   Serial.println(F(">robotSetupDefaults"));
   Serial.println(F(">clearEEPROM"));
 }
@@ -1274,6 +1497,79 @@ boolean stepMotorAndReport(byte axisIndex, long stepAmount) {
   return true;
 }
 
+boolean stepAllMotorsAndReport(long stepAmount) {
+  if ( activeMotionAxisCount == 0 ) {
+    failPendingCommand(F("motor unavailable for current robot"));
+    return false;
+  }
+
+  Serial.print(F("stepping all motors: "));
+  Serial.println(stepAmount);
+  emitProtocolText(F("status"), F("currentAction"), F("stepping all motors"));
+
+  long stepPlan[MAX_MOTION_AXES] = {0, 0, 0, 0};
+  for ( byte axisIndex = 0; axisIndex < activeMotionAxisCount; axisIndex++ ) {
+    stepPlan[axisIndex] = stepAmount;
+  }
+  runMotionSteps(stepPlan, activeMotionAxisCount);
+  return true;
+}
+
+boolean setMotorEnableStateAndReport(boolean enabled) {
+  if ( !motionEnableControlAvailable() ) {
+    failPendingCommand(F("motor enable control unavailable for current robot"));
+    return false;
+  }
+  if ( !setMotionEnabled(enabled) ) {
+    failPendingCommand(F("motor enable control failed"));
+    return false;
+  }
+
+  if ( enabled ) {
+    Serial.println(F("motors enabled"));
+    emitProtocolText(F("status"), F("currentAction"), F("motors enabled"));
+  } else {
+    Serial.println(F("motors disabled"));
+    emitProtocolText(F("status"), F("currentAction"), F("motors disabled"));
+  }
+  return true;
+}
+
+boolean feedQuadHomeCableAndReport() {
+  if ( currentRobotKind != robotKindFlatQuadTension ) {
+    failPendingCommand(F("feedToHome is only available for flat quad"));
+    return false;
+  }
+  if ( !motionImplementedForRobotKind(currentRobotKind) ) {
+    failPendingCommand(F("quad motion not implemented"));
+    return false;
+  }
+  if ( streamQueueActive() ) {
+    failPendingCommand(F("stream move queue not empty"));
+    return false;
+  }
+
+  float homeCableLengths[FLAT_QUAD_AXIS_COUNT] = {0.0f, 0.0f, 0.0f, 0.0f};
+  computeQuadCableLengths(quadHomeScan, quadHomeFeed, homeCableLengths);
+
+  long axisSteps[FLAT_QUAD_AXIS_COUNT] = {0, 0, 0, 0};
+  for ( byte axisIndex = 0; axisIndex < FLAT_QUAD_AXIS_COUNT; axisIndex++ ) {
+    axisSteps[axisIndex] = cableDeltaToSteps(
+      homeCableLengths[axisIndex],
+      getQuadCableCompensation(axisIndex)
+    );
+  }
+
+  Serial.println(F("feeding wire to quad home"));
+  emitProtocolText(F("status"), F("currentAction"), F("feeding wire to home"));
+  Serial.println(F("logical position unchanged; run resetHome after attaching carriage"));
+  runMotionSteps(axisSteps, FLAT_QUAD_AXIS_COUNT);
+
+  Serial.println(F("quad home cable feed complete"));
+  emitProtocolText(F("status"), F("currentAction"), F("home cable feed complete"));
+  return true;
+}
+
 boolean handleSharedCommand() {
   if ( !hasPendingCommand ) return false;
 
@@ -1288,12 +1584,31 @@ boolean handleSharedCommand() {
       return false;
 
     case cmdSetSpeed:
-      minStepperDelay = int(pendingArgument1);
-      minStepperPulse = int(pendingArgument1);
+      {
+        unsigned int requestedSpeed = (unsigned int)max(1L, long(pendingArgument1));
+        SpeedSettingsPayload payload = {
+          requestedSpeed,
+          requestedSpeed
+        };
+        applySpeedSettings(payload);
+      }
       Serial.print(F("speed set at\t"));
-      Serial.println(int(pendingArgument1));
-      emitProtocolInt(F("status"), F("speedDelayMs"), long(pendingArgument1));
+      Serial.println(minStepperDelay);
+      emitSpeedStatus();
       emitProtocolText(F("status"), F("currentAction"), F("speed updated"));
+      finishPendingCommand();
+      return true;
+
+    case cmdGetSpeed:
+      printSpeed();
+      finishPendingCommand();
+      return true;
+
+    case cmdSaveSpeed:
+      saveSpeedSettingsToEEPROM();
+      Serial.println(F("speed saved"));
+      emitSpeedStatus();
+      emitProtocolText(F("status"), F("currentAction"), F("speed saved"));
       finishPendingCommand();
       return true;
 
@@ -1405,6 +1720,33 @@ boolean handleManualMotionCommand() {
         return true;
       }
       if ( !stepMotorAndReport(3, long(pendingArgument1)) ) return true;
+      finishPendingCommand();
+      return true;
+
+    case cmdStepAll:
+      if ( !motionImplementedForRobotKind(currentRobotKind) ) {
+        failPendingCommand(F("quad motion not implemented"));
+        return true;
+      }
+      if ( !stepAllMotorsAndReport(long(pendingArgument1)) ) return true;
+      finishPendingCommand();
+      return true;
+
+    case cmdMotorsOn:
+      if ( hasQueuedStreamMove() ) {
+        failPendingCommand(F("stream move queue not empty"));
+        return true;
+      }
+      if ( !setMotorEnableStateAndReport(true) ) return true;
+      finishPendingCommand();
+      return true;
+
+    case cmdMotorsOff:
+      if ( hasQueuedStreamMove() ) {
+        failPendingCommand(F("stream move queue not empty"));
+        return true;
+      }
+      if ( !setMotorEnableStateAndReport(false) ) return true;
       finishPendingCommand();
       return true;
 
@@ -1560,6 +1902,11 @@ boolean handleManualMotionCommand() {
         return true;
       }
       returnToHome();
+      finishPendingCommand();
+      return true;
+
+    case cmdFeedToHome:
+      if ( !feedQuadHomeCableAndReport() ) return true;
       finishPendingCommand();
       return true;
 
@@ -2167,9 +2514,11 @@ String splitString(String data, char separator, int index) {
 ///////////////////////////////////////////////////
 
 int setCarriageSpeed() {
+  if ( currentRobotKind != robotKindHangingVBot ) return minStepperDelay;
   int stepperDelay = map(getRotaryPosition(A15), 1, 11, 400, 10);
   minStepperDelay = stepperDelay;
   minStepperPulse = stepperDelay;
+  return stepperDelay;
 }
 
 float getRotaryPosition(int readPin) {
@@ -2401,6 +2750,7 @@ void printPosition() {
   Serial.println(currentB);
   emitProtocolPair(F("status"), F("lineLengths"), currentA, currentB);
   printCableTelemetry();
+  emitSpeedStatus();
   Serial.println("_____________________________________");
 }
 

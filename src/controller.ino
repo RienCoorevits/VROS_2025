@@ -2,15 +2,49 @@
 // CONTROLLER                                    //
 ///////////////////////////////////////////////////
 
+const unsigned int MAX_SERIAL_COMMAND_LENGTH = 512;
+String serialCommandBuffer = "";
+boolean serialCommandOverflow = false;
+
+boolean readNextSerialCommand(String& command) {
+  while ( Serial.available() ) {
+    char nextChar = char(Serial.read());
+    if ( nextChar == '\r' ) continue;
+
+    if ( nextChar == '\n' ) {
+      if ( serialCommandOverflow ) {
+        serialCommandBuffer = "";
+        serialCommandOverflow = false;
+        emitProtocolText(F("event"), F("error"), F("serial command too long"));
+        return false;
+      }
+
+      command = serialCommandBuffer;
+      serialCommandBuffer = "";
+      command.trim();
+      if ( !command.length() ) continue;
+      return true;
+    }
+
+    if ( serialCommandOverflow ) continue;
+
+    if ( serialCommandBuffer.length() >= MAX_SERIAL_COMMAND_LENGTH ) {
+      serialCommandBuffer = "";
+      serialCommandOverflow = true;
+      continue;
+    }
+
+    serialCommandBuffer += nextChar;
+  }
+
+  return false;
+}
+
 void controller() {
   String command;
   String advCommand;
   String rawValue;
-  if ( !Serial.available() ) return;
-
-  command = Serial.readStringUntil('\n');
-  command.trim();
-  if ( !command.length() ) return;
+  if ( !readNextSerialCommand(command) ) return;
 
   if ( hasPendingCommand ) {
     emitProtocolText(F("event"), F("error"), F("busy: command dropped"));
@@ -100,16 +134,24 @@ void controller() {
     pendingCommand = cmdStepC;
   } else if ( advCommand.equals("stepD") ) {
     pendingCommand = cmdStepD;
+  } else if ( advCommand.equals("stepAll") ) {
+    pendingCommand = cmdStepAll;
   } else if ( advCommand.equals("stepL") ) {
     pendingCommand = cmdStepL;
   } else if ( advCommand.equals("stepR") ) {
     pendingCommand = cmdStepR;
+  } else if ( command.equals("motors on") ) {
+    pendingCommand = cmdMotorsOn;
+  } else if ( command.equals("motors off") ) {
+    pendingCommand = cmdMotorsOff;
   } else if ( command.equals("outlineCanvas") ) {
     pendingCommand = cmdOutlineCanvas;
   } else if ( command.equals("returnToOrigin") ) {
     pendingCommand = cmdReturnToOrigin;
   } else if ( command.equals("returnToHome") ) {
     pendingCommand = cmdReturnToHome;
+  } else if ( command.equals("feedToHome") ) {
+    pendingCommand = cmdFeedToHome;
   } else if ( command.equals("resetHome") ) {
     pendingCommand = cmdResetHome;
   } else if ( command.equals("terminate") ) {
@@ -126,6 +168,10 @@ void controller() {
     pendingCommand = cmdContinue;
   } else if ( command.equals("position") ) {
     pendingCommand = cmdPosition;
+  } else if ( command.equals("getSpeed") ) {
+    pendingCommand = cmdGetSpeed;
+  } else if ( command.equals("saveSpeed") ) {
+    pendingCommand = cmdSaveSpeed;
   } else if ( command.equals("retrySD") ) {
     pendingCommand = cmdRetrySD;
   } else if ( command.equals("robotSetupGet") ) {

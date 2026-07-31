@@ -136,6 +136,24 @@ boolean configureMotionEnablePin(int enablePin) {
   return true;
 }
 
+boolean motionEnableControlAvailable() {
+  for ( byte axisIndex = 0; axisIndex < activeMotionAxisCount; axisIndex++ ) {
+    if ( activeMotionEnablePins[axisIndex] >= 0 ) return true;
+  }
+  return false;
+}
+
+boolean setMotionEnabled(boolean enabled) {
+  for ( byte axisIndex = 0; axisIndex < activeMotionAxisCount; axisIndex++ ) {
+    int enablePin = activeMotionEnablePins[axisIndex];
+    if ( enablePin < 0 ) continue;
+    if ( !isMotionPinConfigured(enablePin) ) return false;
+    // RAMPS stepper enables are active-low.
+    digitalWrite(enablePin, enabled ? LOW : HIGH);
+  }
+  return true;
+}
+
 boolean configureMotionAxis(
   byte axisIndex,
   int dirPin,
@@ -304,6 +322,7 @@ boolean startPulsePlan(const long* axisSteps, byte axisCount) {
   unsigned int pulseDelayMicroseconds = (unsigned int)minStepperDelay;
   if ( pulseWidthMicroseconds < 1U ) pulseWidthMicroseconds = 1U;
   if ( pulseDelayMicroseconds < 1U ) pulseDelayMicroseconds = 1U;
+  if ( !setMotionEnabled(true) ) return false;
 
   noInterrupts();
   setPulsePlanDirections(axisSteps, axisCount);
