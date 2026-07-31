@@ -8,8 +8,8 @@
 //https://tangrams.github.io/heightmapper
 
 const char FIRMWARE_PRODUCT_NAME[] = "VROS_caseController";
-const char FIRMWARE_SEMVER[] = "2.5.16";
-const char FIRMWARE_COMPAT_ID[] = "VROS_2.5.16_caseController";
+const char FIRMWARE_SEMVER[] = "2.5.17";
+const char FIRMWARE_COMPAT_ID[] = "VROS_2.5.17_caseController";
 const byte HOST_PROTOCOL_VERSION = 1;
 
 
@@ -37,12 +37,6 @@ enum RobotKindId {
   robotKindUnknown = 0,
   robotKindHangingVBot = 1,
   robotKindFlatQuadTension = 2
-};
-
-enum ContactStateId {
-  contactStateUnknown = 0,
-  contactStateDraw = 1,
-  contactStateTravel = 2
 };
 
 enum MotionBackendId {
@@ -91,7 +85,7 @@ struct LegacyRobotSetupPayloadV2 {
   float quadTravelLiftValue;
 };
 
-struct RobotSetupPayload {
+struct LegacyRobotSetupPayloadV3 {
   byte robotKind;
   byte reserved0[3];
   float motorDistance;
@@ -115,6 +109,29 @@ struct RobotSetupPayload {
   float quadTravelLiftValue;
 };
 
+struct RobotSetupPayload {
+  byte robotKind;
+  byte reserved0[3];
+  float motorDistance;
+  float scanOffset;
+  float feedOffset;
+  float width;
+  float height;
+  float lineResolution;
+  float homePosition;
+  float stepsToCm;
+  float microstepResolution;
+  float leftCoilFeed;
+  float rightCoilFeed;
+  float quadHomeScan;
+  float quadHomeFeed;
+  float quadCableAFeed;
+  float quadCableBFeed;
+  float quadCableCFeed;
+  float quadCableDFeed;
+  float quadMotorHeight;
+};
+
 struct LegacyRobotSetupBlockV1 {
   unsigned long magic;
   byte version;
@@ -135,6 +152,16 @@ struct LegacyRobotSetupBlockV2 {
   byte reserved[8];
 };
 
+struct LegacyRobotSetupBlockV3 {
+  unsigned long magic;
+  byte version;
+  byte payloadSize;
+  unsigned int flags;
+  unsigned long crc32;
+  LegacyRobotSetupPayloadV3 payload;
+  byte reserved[4];
+};
+
 struct RobotSetupBlock {
   unsigned long magic;
   byte version;
@@ -142,7 +169,7 @@ struct RobotSetupBlock {
   unsigned int flags;
   unsigned long crc32;
   RobotSetupPayload payload;
-  byte reserved[4];
+  byte reserved[8];
 };
 
 struct RobotSetupBlockHeader {
@@ -153,10 +180,18 @@ struct RobotSetupBlockHeader {
   unsigned long crc32;
 };
 
+struct LegacyPositionBlock {
+  unsigned long magic;
+  long scanX100;
+  long feedX100;
+  unsigned long crc32;
+};
+
 struct PositionBlock {
   unsigned long magic;
   long scanX100;
   long feedX100;
+  long zX100;
   unsigned long crc32;
 };
 
@@ -177,12 +212,14 @@ struct SpeedSettingsBlock {
 const unsigned long ROBOT_SETUP_MAGIC = 0x56525331UL;
 const byte LEGACY_ROBOT_SETUP_VERSION_V1 = 1;
 const byte LEGACY_ROBOT_SETUP_VERSION_V2 = 2;
-const byte ROBOT_SETUP_VERSION = 3;
+const byte LEGACY_ROBOT_SETUP_VERSION_V3 = 3;
+const byte ROBOT_SETUP_VERSION = 4;
 const int ROBOT_SETUP_EEPROM_ADDRESS = 0;
 const unsigned long SPEED_SETTINGS_MAGIC = 0x53504431UL;
 const byte SPEED_SETTINGS_VERSION = 1;
 const int SPEED_SETTINGS_EEPROM_ADDRESS = 96;
-const unsigned long POSITION_MAGIC = 0x504F5331UL;
+const unsigned long LEGACY_POSITION_MAGIC = 0x504F5331UL;
+const unsigned long POSITION_MAGIC = 0x504F5332UL;
 const int POSITION_EEPROM_ADDRESS = 128;
 const int LEGACY_POSITION_BLOCK_EEPROM_ADDRESS = 64;
 const int LEGACY_FEED_EEPROM_ADDRESS = 0;
@@ -228,8 +265,7 @@ const RobotSetupPayload DEFAULT_ROBOT_SETUP = {
   1.00f,
   1.00f,
   1.00f,
-  0.00f,
-  1.00f
+  10.00f
 };
 
 const RobotSetupPayload DEFAULT_QUAD_ROBOT_SETUP = {
@@ -252,8 +288,7 @@ const RobotSetupPayload DEFAULT_QUAD_ROBOT_SETUP = {
   1.00f,
   1.00f,
   1.00f,
-  0.00f,
-  1.00f
+  10.00f
 };
 
 RobotSetupPayload robotSetup = DEFAULT_ROBOT_SETUP;
@@ -277,9 +312,7 @@ float quadCableAFeed = DEFAULT_ROBOT_SETUP.quadCableAFeed;
 float quadCableBFeed = DEFAULT_ROBOT_SETUP.quadCableBFeed;
 float quadCableCFeed = DEFAULT_ROBOT_SETUP.quadCableCFeed;
 float quadCableDFeed = DEFAULT_ROBOT_SETUP.quadCableDFeed;
-float quadDrawLiftValue = DEFAULT_ROBOT_SETUP.quadDrawLiftValue;
-float quadTravelLiftValue = DEFAULT_ROBOT_SETUP.quadTravelLiftValue;
-ContactStateId contactState = contactStateDraw;
+float quadMotorHeight = DEFAULT_ROBOT_SETUP.quadMotorHeight;
 String lastRobotSetupPayloadError = "";
 unsigned long lastUnsupportedMotionReportAt = 0UL;
 
@@ -288,8 +321,10 @@ boolean detectCase = false;
 float stepLength;
 float scan;
 float feed;
+float carriageZ;
 float desiredScan;
 float desiredFeed;
+float desiredZ;
 float currentA;
 float currentB;
 float currentCableLengths[4] = {0.0f, 0.0f, 0.0f, 0.0f};
@@ -306,6 +341,7 @@ long gestureCount; //counts the gestures in the drawing
 //EEPROM vars
 long scanINT;
 long feedINT;
+long zINT;
 
 // SD vars
 File dataFile;
@@ -313,6 +349,8 @@ int filePointer;
 String dataCommand;
 float dataXPos;
 float dataYPos;
+float dataZPos;
+boolean dataHasZ = false;
 String dataValue;
 
 //State Machine Vars
@@ -335,6 +373,7 @@ enum CommandType {
   cmdMotorsOff,
   cmdMoveX,
   cmdMoveY,
+  cmdMoveZ,
   cmdMoveLeft,
   cmdMoveRight,
   cmdMoveUp,
@@ -370,6 +409,8 @@ DrawOutcome drawOutcome = drawNone;
 CommandType pendingCommand = cmdNone;
 float pendingArgument1 = 0.0f;
 float pendingArgument2 = 0.0f;
+float pendingArgument3 = 0.0f;
+boolean pendingArgument3Provided = false;
 String pendingText1 = "";
 String pendingText2 = "";
 boolean hasPendingCommand = false;
@@ -377,6 +418,8 @@ boolean drawingFileOpen = false;
 const int streamMoveQueueCapacity = 12;
 float streamMoveQueueScan[streamMoveQueueCapacity];
 float streamMoveQueueFeed[streamMoveQueueCapacity];
+float streamMoveQueueZ[streamMoveQueueCapacity];
+boolean streamMoveQueueHasZ[streamMoveQueueCapacity];
 int streamMoveQueueHead = 0;
 int streamMoveQueueTail = 0;
 int streamMoveQueueCount = 0;
@@ -428,10 +471,22 @@ unsigned long calculateLegacyRobotSetupCRC(const LegacyRobotSetupPayloadV2& payl
   return crc32Update(0UL, (const byte*)&payload, sizeof(LegacyRobotSetupPayloadV2));
 }
 
-unsigned long calculatePositionCRC(long scanX100Value, long feedX100Value) {
+unsigned long calculateLegacyRobotSetupCRC(const LegacyRobotSetupPayloadV3& payload) {
+  return crc32Update(0UL, (const byte*)&payload, sizeof(LegacyRobotSetupPayloadV3));
+}
+
+unsigned long calculateLegacyPositionCRC(long scanX100Value, long feedX100Value) {
   unsigned long crc = 0UL;
   crc = crc32Update(crc, (const byte*)&scanX100Value, sizeof(long));
   crc = crc32Update(crc, (const byte*)&feedX100Value, sizeof(long));
+  return crc;
+}
+
+unsigned long calculatePositionCRC(long scanX100Value, long feedX100Value, long zX100Value) {
+  unsigned long crc = 0UL;
+  crc = crc32Update(crc, (const byte*)&scanX100Value, sizeof(long));
+  crc = crc32Update(crc, (const byte*)&feedX100Value, sizeof(long));
+  crc = crc32Update(crc, (const byte*)&zX100Value, sizeof(long));
   return crc;
 }
 
@@ -482,18 +537,8 @@ RobotKindId parseRobotKindToken(const String& value) {
   return robotKindUnknown;
 }
 
-const char* getContactStateToken(ContactStateId state) {
-  switch (state) {
-    case contactStateTravel: return "travel";
-    case contactStateDraw: return "draw";
-    default: return "unknown";
-  }
-}
-
-ContactStateId parseContactStateToken(const String& value) {
-  if ( value == "draw" ) return contactStateDraw;
-  if ( value == "travel" ) return contactStateTravel;
-  return contactStateUnknown;
+boolean isLegacyContactStateToken(const String& value) {
+  return value == "draw" || value == "travel";
 }
 
 const char* getMotionBackendToken(MotionBackendId backend) {
@@ -632,8 +677,7 @@ String describeRobotSetupValidationError(const RobotSetupPayload& payload) {
     if ( !validFloatRange(payload.quadCableBFeed, 0.5f, 1.5f) ) return String(F("quadCableBFeed ")) + formatFloatRangeDetail(payload.quadCableBFeed, 0.5f, 1.5f);
     if ( !validFloatRange(payload.quadCableCFeed, 0.5f, 1.5f) ) return String(F("quadCableCFeed ")) + formatFloatRangeDetail(payload.quadCableCFeed, 0.5f, 1.5f);
     if ( !validFloatRange(payload.quadCableDFeed, 0.5f, 1.5f) ) return String(F("quadCableDFeed ")) + formatFloatRangeDetail(payload.quadCableDFeed, 0.5f, 1.5f);
-    if ( !validFloatRange(payload.quadDrawLiftValue, -50.0f, 50.0f) ) return String(F("quadDrawLiftValue ")) + formatFloatRangeDetail(payload.quadDrawLiftValue, -50.0f, 50.0f);
-    if ( !validFloatRange(payload.quadTravelLiftValue, -50.0f, 50.0f) ) return String(F("quadTravelLiftValue ")) + formatFloatRangeDetail(payload.quadTravelLiftValue, -50.0f, 50.0f);
+    if ( !validFloatRange(payload.quadMotorHeight, 0.01f, 500.0f) ) return String(F("quadMotorHeight ")) + formatFloatRangeDetail(payload.quadMotorHeight, 0.01f, 500.0f);
     return "";
   }
 
@@ -671,16 +715,22 @@ void applyRobotSetup(const RobotSetupPayload& payload) {
   quadCableBFeed = robotSetup.quadCableBFeed;
   quadCableCFeed = robotSetup.quadCableCFeed;
   quadCableDFeed = robotSetup.quadCableDFeed;
-  quadDrawLiftValue = robotSetup.quadDrawLiftValue;
-  quadTravelLiftValue = robotSetup.quadTravelLiftValue;
+  quadMotorHeight = robotSetup.quadMotorHeight;
   configureMotionAxisMapForRobotKind(currentRobotKind);
   stepLength = 1.0f / stepsToCm;
   if ( scan < 0.0f ) scan = 0.0f;
   if ( feed < 0.0f ) feed = 0.0f;
   if ( scan > width ) scan = width;
   if ( feed > height ) feed = height;
+  if ( currentRobotKind == robotKindFlatQuadTension ) {
+    if ( carriageZ < 0.0f ) carriageZ = 0.0f;
+    if ( carriageZ > quadMotorHeight ) carriageZ = quadMotorHeight;
+  } else {
+    carriageZ = 0.0f;
+  }
   desiredScan = scan;
   desiredFeed = feed;
+  desiredZ = carriageZ;
 }
 
 void applyDefaultRobotSetupForKind(RobotKindId robotKind) {
@@ -733,8 +783,37 @@ RobotSetupPayload migrateLegacyRobotSetupV2(const LegacyRobotSetupPayloadV2& leg
   payload.quadCableBFeed = legacyPayload.quadCableBFeed;
   payload.quadCableCFeed = legacyPayload.quadCableCFeed;
   payload.quadCableDFeed = legacyPayload.quadCableDFeed;
-  payload.quadDrawLiftValue = legacyPayload.quadDrawLiftValue;
-  payload.quadTravelLiftValue = legacyPayload.quadTravelLiftValue;
+  payload.quadMotorHeight = DEFAULT_QUAD_ROBOT_SETUP.quadMotorHeight;
+  normalizeRobotSetup(payload);
+  return payload;
+}
+
+RobotSetupPayload migrateLegacyRobotSetupV3(const LegacyRobotSetupPayloadV3& legacyPayload) {
+  RobotKindId robotKind = (
+    legacyPayload.robotKind == robotKindFlatQuadTension
+    ? robotKindFlatQuadTension
+    : robotKindHangingVBot
+  );
+  RobotSetupPayload payload = defaultRobotSetupForKind(robotKind);
+  payload.robotKind = byte(robotKind);
+  payload.motorDistance = legacyPayload.motorDistance;
+  payload.scanOffset = legacyPayload.scanOffset;
+  payload.feedOffset = legacyPayload.feedOffset;
+  payload.width = legacyPayload.width;
+  payload.height = legacyPayload.height;
+  payload.lineResolution = legacyPayload.lineResolution;
+  payload.homePosition = legacyPayload.homePosition;
+  payload.stepsToCm = legacyPayload.stepsToCm;
+  payload.microstepResolution = legacyPayload.microstepResolution;
+  payload.leftCoilFeed = legacyPayload.leftCoilFeed;
+  payload.rightCoilFeed = legacyPayload.rightCoilFeed;
+  payload.quadHomeScan = legacyPayload.quadHomeScan;
+  payload.quadHomeFeed = legacyPayload.quadHomeFeed;
+  payload.quadCableAFeed = legacyPayload.quadCableAFeed;
+  payload.quadCableBFeed = legacyPayload.quadCableBFeed;
+  payload.quadCableCFeed = legacyPayload.quadCableCFeed;
+  payload.quadCableDFeed = legacyPayload.quadCableDFeed;
+  payload.quadMotorHeight = DEFAULT_QUAD_ROBOT_SETUP.quadMotorHeight;
   normalizeRobotSetup(payload);
   return payload;
 }
@@ -753,6 +832,20 @@ boolean loadRobotSetupFromEEPROM() {
     if ( block.crc32 != calculateRobotSetupCRC(block.payload) ) return false;
     if ( !validateRobotSetup(block.payload) ) return false;
     applyRobotSetup(block.payload);
+    return true;
+  }
+
+  if (
+    header.version == LEGACY_ROBOT_SETUP_VERSION_V3
+    && header.payloadSize == sizeof(LegacyRobotSetupPayloadV3)
+  ) {
+    LegacyRobotSetupBlockV3 legacyBlock;
+    EEPROM.get(ROBOT_SETUP_EEPROM_ADDRESS, legacyBlock);
+    if ( legacyBlock.crc32 != calculateLegacyRobotSetupCRC(legacyBlock.payload) ) return false;
+
+    RobotSetupPayload migrated = migrateLegacyRobotSetupV3(legacyBlock.payload);
+    if ( !validateRobotSetup(migrated) ) return false;
+    applyRobotSetup(migrated);
     return true;
   }
 
@@ -803,14 +896,30 @@ void saveRobotSetupToEEPROM() {
 }
 
 boolean loadLegacyPositionBlockFromEEPROM() {
-  PositionBlock block;
+  LegacyPositionBlock block;
   EEPROM.get(LEGACY_POSITION_BLOCK_EEPROM_ADDRESS, block);
   if (
-    block.magic == POSITION_MAGIC
-    && block.crc32 == calculatePositionCRC(block.scanX100, block.feedX100)
+    block.magic == LEGACY_POSITION_MAGIC
+    && block.crc32 == calculateLegacyPositionCRC(block.scanX100, block.feedX100)
   ) {
     scan = float(block.scanX100) / 100.0f;
     feed = float(block.feedX100) / 100.0f;
+    carriageZ = 0.0f;
+    return true;
+  }
+  return false;
+}
+
+boolean loadLegacyPositionBlockFromAddress(int address) {
+  LegacyPositionBlock block;
+  EEPROM.get(address, block);
+  if (
+    block.magic == LEGACY_POSITION_MAGIC
+    && block.crc32 == calculateLegacyPositionCRC(block.scanX100, block.feedX100)
+  ) {
+    scan = float(block.scanX100) / 100.0f;
+    feed = float(block.feedX100) / 100.0f;
+    carriageZ = 0.0f;
     return true;
   }
   return false;
@@ -828,6 +937,7 @@ boolean loadLegacyPositionFromEEPROM() {
 
   scan = float(legacyScan) / 100.0f;
   feed = float(legacyFeed) / 100.0f;
+  carriageZ = 0.0f;
   return true;
 }
 
@@ -836,10 +946,16 @@ boolean loadPositionFromEEPROM() {
   EEPROM.get(POSITION_EEPROM_ADDRESS, block);
   if (
     block.magic == POSITION_MAGIC
-    && block.crc32 == calculatePositionCRC(block.scanX100, block.feedX100)
+    && block.crc32 == calculatePositionCRC(block.scanX100, block.feedX100, block.zX100)
   ) {
     scan = float(block.scanX100) / 100.0f;
     feed = float(block.feedX100) / 100.0f;
+    carriageZ = float(block.zX100) / 100.0f;
+    return true;
+  }
+
+  if ( loadLegacyPositionBlockFromAddress(POSITION_EEPROM_ADDRESS) ) {
+    savePositionToEEPROM();
     return true;
   }
 
@@ -855,6 +971,7 @@ boolean loadPositionFromEEPROM() {
 
   scan = 0.0f;
   feed = 0.0f;
+  carriageZ = 0.0f;
   return false;
 }
 
@@ -863,7 +980,8 @@ void savePositionToEEPROM() {
   block.magic = POSITION_MAGIC;
   block.scanX100 = long(scan * 100.0f);
   block.feedX100 = long(feed * 100.0f);
-  block.crc32 = calculatePositionCRC(block.scanX100, block.feedX100);
+  block.zX100 = long(carriageZ * 100.0f);
+  block.crc32 = calculatePositionCRC(block.scanX100, block.feedX100, block.zX100);
   EEPROM.put(POSITION_EEPROM_ADDRESS, block);
 }
 
@@ -946,20 +1064,12 @@ void reportUnsupportedMotion() {
   unsigned long now = millis();
   if ( now - lastUnsupportedMotionReportAt < 500UL ) return;
   lastUnsupportedMotionReportAt = now;
-  emitProtocolText(F("event"), F("error"), F("quad motion not implemented"));
-}
-
-void setContactState(ContactStateId nextState, boolean report) {
-  if ( nextState == contactStateUnknown ) return;
-  contactState = nextState;
-  if ( report ) {
-    emitProtocolText(F("status"), F("contactState"), getContactStateToken(contactState));
-  }
+  emitProtocolText(F("event"), F("error"), F("motion not implemented for current robot"));
 }
 
 void updateCableTelemetryFromPosition() {
   if ( currentRobotKind == robotKindFlatQuadTension ) {
-    computeQuadCableLengths(scan, feed, currentCableLengths);
+    computeQuadCableLengths(scan, feed, carriageZ, currentCableLengths);
     currentA = currentCableLengths[0];
     currentB = currentCableLengths[1];
     return;
@@ -1013,7 +1123,6 @@ void printSpeed() {
 
 void printRobotSetup() {
   emitProtocolText(F("status"), F("robotKind"), getRobotKindToken(currentRobotKind));
-  emitProtocolText(F("status"), F("contactState"), getContactStateToken(contactState));
   printMotionCapability();
   emitProtocolText(
     F("config"),
@@ -1038,8 +1147,7 @@ void printRobotSetup() {
   emitProtocolFloat(F("config"), F("robotSetup.quadCableBFeed"), quadCableBFeed);
   emitProtocolFloat(F("config"), F("robotSetup.quadCableCFeed"), quadCableCFeed);
   emitProtocolFloat(F("config"), F("robotSetup.quadCableDFeed"), quadCableDFeed);
-  emitProtocolFloat(F("config"), F("robotSetup.quadDrawLiftValue"), quadDrawLiftValue);
-  emitProtocolFloat(F("config"), F("robotSetup.quadTravelLiftValue"), quadTravelLiftValue);
+  emitProtocolFloat(F("config"), F("robotSetup.quadMotorHeight"), quadMotorHeight);
   emitSpeedStatus();
 }
 
@@ -1161,10 +1269,8 @@ boolean parseRobotSetupWritePayload(const String& rawValue, RobotSetupPayload& p
       payload.quadCableCFeed = fieldValue.toFloat();
     } else if ( fieldName == "quadCableDFeed" ) {
       payload.quadCableDFeed = fieldValue.toFloat();
-    } else if ( fieldName == "quadDrawLiftValue" ) {
-      payload.quadDrawLiftValue = fieldValue.toFloat();
-    } else if ( fieldName == "quadTravelLiftValue" ) {
-      payload.quadTravelLiftValue = fieldValue.toFloat();
+    } else if ( fieldName == "quadMotorHeight" ) {
+      payload.quadMotorHeight = fieldValue.toFloat();
     } else {
       return failRobotSetupPayloadParse(
         String(F("unsupported field '")) + fieldName + String(F("'"))
@@ -1216,6 +1322,7 @@ void setup() {
   }
   desiredScan = scan;
   desiredFeed = feed;
+  desiredZ = carriageZ;
   updateCableTelemetryFromPosition();
 
 
@@ -1264,7 +1371,9 @@ void setup() {
   Serial.println(F("reading EEPROM"));
   Serial.print(scan);
   Serial.print(",");
-  Serial.println(feed);
+  Serial.print(feed);
+  Serial.print(",");
+  Serial.println(carriageZ);
   Serial.println("_____________________________________");
   Serial.println("");
 
@@ -1274,7 +1383,7 @@ void setup() {
   enterState(noSD);
   if ( initialiseSD() ) enterState(idle);
 
-  if ( scan != 0 && feed != 0 ) {
+  if ( scan != 0 || feed != 0 || carriageZ != 0 ) {
     Serial.println(F("_____________________________________"));
     Serial.println(F("PEN IS NOT AT ORIGIN!"));
     Serial.println(F("_____________________________________"));
@@ -1285,14 +1394,15 @@ void setup() {
   Serial.println(F(">abort"));
   Serial.println(F(">pause"));
   Serial.println(F(">continue"));
-  Serial.println(F(">move, scan, feed"));
+  Serial.println(F(">move, scan, feed[,z]"));
   Serial.println(F(">moveX, deltaScan"));
   Serial.println(F(">moveY, deltaFeed"));
+  Serial.println(F(">moveZ, deltaZ"));
   Serial.println(F(">moveLeft, distance"));
   Serial.println(F(">moveRight, distance"));
   Serial.println(F(">moveUp, distance"));
   Serial.println(F(">moveDown, distance"));
-  Serial.println(F(">contact\\tdraw|travel"));
+  Serial.println(F(">contact\\tdraw|travel (legacy no-op)"));
   Serial.println(F(">stepA, amount"));
   Serial.println(F(">stepB, amount"));
   Serial.println(F(">stepC, amount"));
@@ -1313,7 +1423,7 @@ void setup() {
   Serial.println(F(">robotSetupGet"));
   Serial.println(F(">robotSetupWrite\\t62,10,20,50,0.5,82,1,0.997,35[,0.0625]"));
   Serial.println(F(">robotSetupWrite\\trobotKind=hanging_vbot,motorDistance=62,scanOffset=10,feedOffset=20,height=50,lineResolution=0.5,homePosition=82,leftCoilFeed=1,rightCoilFeed=0.997,stepsToCm=35,microstepResolution=0.0625"));
-  Serial.println(F(">robotSetupWrite\\trobotKind=flat_quad_tension,scanOffset=0,feedOffset=0,width=42,height=50,lineResolution=0.5,stepsToCm=35,microstepResolution=0.0625,quadHomeScan=21,quadHomeFeed=25,quadCableAFeed=1,quadCableBFeed=1,quadCableCFeed=1,quadCableDFeed=1,quadDrawLiftValue=0,quadTravelLiftValue=1"));
+  Serial.println(F(">robotSetupWrite\\trobotKind=flat_quad_tension,scanOffset=0,feedOffset=0,width=42,height=50,lineResolution=0.5,stepsToCm=35,microstepResolution=0.0625,quadHomeScan=21,quadHomeFeed=25,quadCableAFeed=1,quadCableBFeed=1,quadCableCFeed=1,quadCableDFeed=1,quadMotorHeight=10"));
   Serial.println(F(">robotSetupDefaults"));
   Serial.println(F(">clearEEPROM"));
 }
@@ -1392,6 +1502,8 @@ void clearPendingCommand() {
   pendingCommand = cmdNone;
   pendingArgument1 = 0.0f;
   pendingArgument2 = 0.0f;
+  pendingArgument3 = 0.0f;
+  pendingArgument3Provided = false;
   pendingText1 = "";
   pendingText2 = "";
   hasPendingCommand = false;
@@ -1405,24 +1517,38 @@ boolean streamQueueActive() {
   return streamMoveQueuePaused || hasQueuedStreamMove();
 }
 
-boolean enqueueStreamMove(float scanPos, float feedPos) {
+boolean enqueueStreamMove(float scanPos, float feedPos, boolean hasZ, float zPos) {
   if ( streamMoveQueueCount >= streamMoveQueueCapacity ) return false;
 
   streamMoveQueueScan[streamMoveQueueTail] = scanPos;
   streamMoveQueueFeed[streamMoveQueueTail] = feedPos;
+  streamMoveQueueZ[streamMoveQueueTail] = zPos;
+  streamMoveQueueHasZ[streamMoveQueueTail] = hasZ;
   streamMoveQueueTail = (streamMoveQueueTail + 1) % streamMoveQueueCapacity;
   streamMoveQueueCount++;
   return true;
 }
 
-boolean popQueuedStreamMove(float& scanPos, float& feedPos) {
+boolean popQueuedStreamMove(float& scanPos, float& feedPos, boolean& hasZ, float& zPos) {
   if ( !hasQueuedStreamMove() ) return false;
 
   scanPos = streamMoveQueueScan[streamMoveQueueHead];
   feedPos = streamMoveQueueFeed[streamMoveQueueHead];
+  zPos = streamMoveQueueZ[streamMoveQueueHead];
+  hasZ = streamMoveQueueHasZ[streamMoveQueueHead];
   streamMoveQueueHead = (streamMoveQueueHead + 1) % streamMoveQueueCapacity;
   streamMoveQueueCount--;
   return true;
+}
+
+void emitTargetTelemetry(float scanPos, float feedPos, float zPos) {
+  emitProtocolPair(F("status"), F("target"), scanPos, feedPos);
+  emitProtocolFloat(F("status"), F("targetZ"), zPos);
+}
+
+void emitMoveCompleteTelemetry() {
+  emitProtocolPair(F("event"), F("moveComplete"), scan, feed);
+  emitProtocolFloat(F("event"), F("moveCompleteZ"), carriageZ);
 }
 
 boolean executeNextQueuedStreamMove() {
@@ -1433,21 +1559,29 @@ boolean executeNextQueuedStreamMove() {
 
   float scanPos;
   float feedPos;
-  if ( !popQueuedStreamMove(scanPos, feedPos) ) return false;
+  float zPos;
+  boolean hasZ;
+  if ( !popQueuedStreamMove(scanPos, feedPos, hasZ, zPos) ) return false;
 
   Serial.print(F("moving to\t"));
   Serial.print(scanPos, 4);
   Serial.print(F(","));
-  Serial.println(feedPos, 4);
-  emitProtocolPair(F("status"), F("target"), scanPos, feedPos);
+  Serial.print(feedPos, 4);
+  if ( hasZ ) {
+    Serial.print(F(","));
+    Serial.println(zPos, 4);
+  } else {
+    Serial.println();
+  }
+  emitTargetTelemetry(scanPos, feedPos, hasZ ? zPos : carriageZ);
   emitProtocolText(F("status"), F("currentAction"), F("moving"));
   emitProtocolText(F("status"), F("positionConfidence"), F("updating"));
-  gesture(scanPos, feedPos);
-  Serial.print(F("moveComplete\t"));
-  Serial.print(scan, 4);
-  Serial.print(F(","));
-  Serial.println(feed, 4);
-  emitProtocolPair(F("event"), F("moveComplete"), scan, feed);
+  if ( hasZ ) {
+    gesture(scanPos, feedPos, zPos);
+  } else {
+    gesture(scanPos, feedPos);
+  }
+  emitMoveCompleteTelemetry();
   return true;
 }
 
@@ -1465,18 +1599,32 @@ void rejectPendingCommand() {
   failPendingCommand(String(F("command unavailable in state ")) + getStateName(machineState));
 }
 
-void moveToTargetAndReport(float targetScan, float targetFeed) {
+void moveToTargetAndReport(float targetScan, float targetFeed, float targetZ) {
   type = "absolute";
   Serial.print(F("moving to\t"));
   Serial.print(targetScan);
   Serial.print(F(","));
-  Serial.println(targetFeed);
-  emitProtocolPair(F("status"), F("target"), targetScan, targetFeed);
+  Serial.print(targetFeed);
+  Serial.print(F(","));
+  Serial.println(targetZ);
+  emitTargetTelemetry(
+    targetScan,
+    targetFeed,
+    currentRobotKind == robotKindFlatQuadTension ? targetZ : 0.0f
+  );
   emitProtocolText(F("status"), F("currentAction"), F("moving"));
   emitProtocolText(F("status"), F("positionConfidence"), F("updating"));
-  gesture(targetScan, targetFeed);
-  emitProtocolPair(F("event"), F("moveComplete"), scan, feed);
+  if ( currentRobotKind == robotKindFlatQuadTension ) {
+    gesture(targetScan, targetFeed, targetZ);
+  } else {
+    gesture(targetScan, targetFeed);
+  }
+  emitMoveCompleteTelemetry();
   printPosition();
+}
+
+void moveToTargetAndReport(float targetScan, float targetFeed) {
+  moveToTargetAndReport(targetScan, targetFeed, carriageZ);
 }
 
 boolean stepMotorAndReport(byte axisIndex, long stepAmount) {
@@ -1550,7 +1698,7 @@ boolean feedQuadHomeCableAndReport() {
   }
 
   float homeCableLengths[FLAT_QUAD_AXIS_COUNT] = {0.0f, 0.0f, 0.0f, 0.0f};
-  computeQuadCableLengths(quadHomeScan, quadHomeFeed, homeCableLengths);
+  computeQuadCableLengths(quadHomeScan, quadHomeFeed, 0.0f, homeCableLengths);
 
   long axisSteps[FLAT_QUAD_AXIS_COUNT] = {0, 0, 0, 0};
   for ( byte axisIndex = 0; axisIndex < FLAT_QUAD_AXIS_COUNT; axisIndex++ ) {
@@ -1663,7 +1811,15 @@ boolean handleManualMotionCommand() {
         failPendingCommand(F("quad motion not implemented"));
         return true;
       }
-      moveToTargetAndReport(pendingArgument1, pendingArgument2);
+      if ( pendingArgument3Provided ) {
+        if ( currentRobotKind != robotKindFlatQuadTension ) {
+          failPendingCommand(F("z moves are only available for flat quad"));
+          return true;
+        }
+        moveToTargetAndReport(pendingArgument1, pendingArgument2, pendingArgument3);
+      } else {
+        moveToTargetAndReport(pendingArgument1, pendingArgument2);
+      }
       finishPendingCommand();
       return true;
 
@@ -1672,12 +1828,16 @@ boolean handleManualMotionCommand() {
         failPendingCommand(F("quad motion not implemented"));
         return true;
       }
-      if ( enqueueStreamMove(pendingArgument1, pendingArgument2) ) {
+      if ( pendingArgument3Provided && currentRobotKind != robotKindFlatQuadTension ) {
+        failPendingCommand(F("z moves are only available for flat quad"));
+        return true;
+      }
+      if ( enqueueStreamMove(pendingArgument1, pendingArgument2, pendingArgument3Provided, pendingArgument3) ) {
         finishPendingCommand();
         return true;
       }
 
-      if ( executeNextQueuedStreamMove() && enqueueStreamMove(pendingArgument1, pendingArgument2) ) {
+      if ( executeNextQueuedStreamMove() && enqueueStreamMove(pendingArgument1, pendingArgument2, pendingArgument3Provided, pendingArgument3) ) {
         finishPendingCommand();
         return true;
       }
@@ -1768,6 +1928,15 @@ boolean handleManualMotionCommand() {
       finishPendingCommand();
       return true;
 
+    case cmdMoveZ:
+      if ( currentRobotKind != robotKindFlatQuadTension ) {
+        failPendingCommand(F("moveZ is only available for flat quad"));
+        return true;
+      }
+      moveToTargetAndReport(scan, feed, carriageZ + pendingArgument1);
+      finishPendingCommand();
+      return true;
+
     case cmdMoveLeft: {
       if ( !motionImplementedForRobotKind(currentRobotKind) ) {
         failPendingCommand(F("quad motion not implemented"));
@@ -1847,12 +2016,10 @@ boolean handleManualMotionCommand() {
         failPendingCommand(F("stream move queue not empty"));
         return true;
       }
-      ContactStateId nextState = parseContactStateToken(pendingText1);
-      if ( nextState == contactStateUnknown ) {
+      if ( !isLegacyContactStateToken(pendingText1) ) {
         failPendingCommand(F("unsupported contact state"));
         return true;
       }
-      setContactState(nextState, true);
       finishPendingCommand();
       return true;
     }
@@ -1979,7 +2146,12 @@ boolean handleDrawingInstruction() {
   if ( !readInstruction() ) return false;
 
   if ( dataCommand == "move" ) {
-    if ( !gesture(dataXPos, dataYPos) ) {
+    boolean moveAccepted = (
+      dataHasZ
+      ? gesture(dataXPos, dataYPos, dataZPos)
+      : gesture(dataXPos, dataYPos)
+    );
+    if ( !moveAccepted ) {
       return false;
     }
   } else if ( dataCommand == "type" ) {
@@ -1992,12 +2164,9 @@ boolean handleDrawingInstruction() {
   } else if ( dataCommand == "adjustment" ) {
     adjustmentType = dataValue;
   } else if ( dataCommand == "contact" ) {
-    ContactStateId nextState = parseContactStateToken(dataValue);
-    if ( nextState == contactStateUnknown ) {
+    if ( !isLegacyContactStateToken(dataValue) ) {
       Serial.print(F("unknown contact:\t"));
       Serial.println(dataValue);
-    } else {
-      setContactState(nextState, true);
     }
   } else if ( dataCommand.length() ) {
     Serial.print(F("unknown instruction:\t"));
@@ -2325,6 +2494,19 @@ boolean gesture(float xPos, float yPos) {
   return true;
 }
 
+boolean gesture(float xPos, float yPos, float zPos) {
+  if ( !motionImplementedForRobotKind(currentRobotKind) ) {
+    reportUnsupportedMotion();
+    return false;
+  }
+  if ( currentRobotKind != robotKindFlatQuadTension ) {
+    emitProtocolText(F("event"), F("error"), F("z moves are only available for flat quad"));
+    return false;
+  }
+  movePenBresenham(xPos, yPos, zPos);
+  return true;
+}
+
 float segmentAdjustment(float scanLine, float feedLine, String getter) {
   if ( adjustmentType == "none" && getter == "scan" ) return 0;
   if ( adjustmentType == "none" && getter == "feed" ) return 0;
@@ -2466,6 +2648,8 @@ boolean readInstruction() {
   dataValue = "";
   dataXPos = 0.0f;
   dataYPos = 0.0f;
+  dataZPos = 0.0f;
+  dataHasZ = false;
 
   if ( !dataFile.available()) return false;
 
@@ -2478,9 +2662,17 @@ boolean readInstruction() {
   if ( command == "move" ) {
     String stXPos = splitString(value, ',', 0);
     String stYPos = splitString(value, ',', 1);
+    String stZPos = splitString(value, ',', 2);
+    stXPos.trim();
+    stYPos.trim();
+    stZPos.trim();
     dataCommand = command;
     dataXPos = stXPos.toFloat();
     dataYPos = stYPos.toFloat();
+    if ( stZPos.length() ) {
+      dataZPos = stZPos.toFloat();
+      dataHasZ = true;
+    }
   } else {
     dataValue = value;
     dataCommand = command;
@@ -2656,6 +2848,7 @@ void terminate() {
   //Serial.println("saving scan and feed to EEPROM");
   feedINT = feed * 100;
   scanINT = scan * 100;
+  zINT = carriageZ * 100;
   updateCableTelemetryFromPosition();
   savePositionToEEPROM();
   //Serial.print(feedINT);
@@ -2667,22 +2860,25 @@ void resetHome() {
   if ( currentRobotKind == robotKindFlatQuadTension ) {
     scan = quadHomeScan;
     feed = quadHomeFeed;
+    carriageZ = 0.0f;
   } else {
     feed = homePosition - feedOffset;
     scan = width / 2;
+    carriageZ = 0.0f;
   }
   desiredScan = scan;
   desiredFeed = feed;
+  desiredZ = carriageZ;
   updateCableTelemetryFromPosition();
   Serial.println("_____________________________________");
   Serial.println("carriage reset at: ");
   Serial.print(scan);
   Serial.print(",");
-  Serial.println(feed);
+  Serial.print(feed);
+  Serial.print(",");
+  Serial.println(carriageZ);
   Serial.print("robotKind\t");
   Serial.println(getRobotKindToken(currentRobotKind));
-  Serial.print("contactState\t");
-  Serial.println(getContactStateToken(contactState));
   printMotionCapability();
   printCableTelemetry();
   Serial.println("_____________________________________");
@@ -2702,7 +2898,11 @@ void returnToOrigin() {
   emitProtocolText(F("status"), F("positionConfidence"), F("updating"));
   digitalWrite(LED4, HIGH);
   type = "absolute";
-  gesture(0, 0);
+  if ( currentRobotKind == robotKindFlatQuadTension ) {
+    gesture(0, 0, 0);
+  } else {
+    gesture(0, 0);
+  }
   terminate();
   Serial.println("carriage at origin");
   printPosition();
@@ -2720,7 +2920,7 @@ void returnToHome() {
   emitProtocolText(F("status"), F("positionConfidence"), F("updating"));
   type = "absolute";
   if ( currentRobotKind == robotKindFlatQuadTension ) {
-    gesture(quadHomeScan, quadHomeFeed);
+    gesture(quadHomeScan, quadHomeFeed, 0.0f);
   } else {
     gesture(width / 2, homePosition - feedOffset);
   }
@@ -2735,14 +2935,15 @@ void printPosition() {
   Serial.println("_____________________________________");
   Serial.print("robotKind\t");
   Serial.println(getRobotKindToken(currentRobotKind));
-  Serial.print("contactState\t");
-  Serial.println(getContactStateToken(contactState));
   printMotionCapability();
   Serial.println("carriage at:");
   Serial.print(scan);
   Serial.print(",");
-  Serial.println(feed);
+  Serial.print(feed);
+  Serial.print(",");
+  Serial.println(carriageZ);
   emitProtocolPair(F("status"), F("position"), scan, feed);
+  emitProtocolFloat(F("status"), F("positionZ"), carriageZ);
   emitProtocolText(F("status"), F("positionConfidence"), F("reported"));
   Serial.println("lineLength A/B:");
   Serial.print(currentA);

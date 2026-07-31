@@ -466,28 +466,43 @@ float getQuadCableCompensation(byte axisIndex) {
   return quadCableDFeed;
 }
 
+float clampQuadZ(float zPos) {
+  if ( zPos < 0.0f ) return 0.0f;
+  if ( zPos > quadMotorHeight ) return quadMotorHeight;
+  return zPos;
+}
+
 void computeQuadCableLengths(
   float scanPos,
   float feedPos,
+  float zPos,
   float cableLengths[FLAT_QUAD_AXIS_COUNT]
 ) {
   float leftAnchor = -scanOffset;
   float rightAnchor = width + scanOffset;
   float topAnchor = -feedOffset;
   float bottomAnchor = height + feedOffset;
-  cableLengths[0] = dist(scanPos, feedPos, leftAnchor, topAnchor);
-  cableLengths[1] = dist(scanPos, feedPos, rightAnchor, topAnchor);
-  cableLengths[2] = dist(scanPos, feedPos, rightAnchor, bottomAnchor);
-  cableLengths[3] = dist(scanPos, feedPos, leftAnchor, bottomAnchor);
+  float verticalOffset = quadMotorHeight - clampQuadZ(zPos);
+  cableLengths[0] = sqrt(sq(scanPos - leftAnchor) + sq(feedPos - topAnchor) + sq(verticalOffset));
+  cableLengths[1] = sqrt(sq(scanPos - rightAnchor) + sq(feedPos - topAnchor) + sq(verticalOffset));
+  cableLengths[2] = sqrt(sq(scanPos - rightAnchor) + sq(feedPos - bottomAnchor) + sq(verticalOffset));
+  cableLengths[3] = sqrt(sq(scanPos - leftAnchor) + sq(feedPos - bottomAnchor) + sq(verticalOffset));
 }
 
-void prepareGestureTarget(float xPos, float yPos) {
+void prepareGestureTarget(float xPos, float yPos, boolean hasZ, float zPos) {
   if ( type == "relative" ) {
     desiredScan += xPos;
     desiredFeed += yPos;
+    if ( hasZ ) desiredZ += zPos;
   } else {
     desiredScan = xPos;
     desiredFeed = yPos;
+    if ( hasZ ) desiredZ = zPos;
+  }
+  if ( currentRobotKind == robotKindFlatQuadTension ) {
+    desiredZ = clampQuadZ(desiredZ);
+  } else {
+    desiredZ = 0.0f;
   }
 }
 
@@ -556,7 +571,7 @@ void printGestureFooter() {
 }
 
 void movePenBresenhamHanging(float xPos, float yPos) {
-  prepareGestureTarget(xPos, yPos);
+  prepareGestureTarget(xPos, yPos, false, 0.0f);
 
   float startScan = scan;
   float startFeed = feed;
@@ -614,14 +629,18 @@ void movePenBresenhamHanging(float xPos, float yPos) {
   terminate();
 }
 
-void movePenBresenhamQuad(float xPos, float yPos) {
-  prepareGestureTarget(xPos, yPos);
+void movePenBresenhamQuad(float xPos, float yPos, boolean hasZ, float zPos) {
+  prepareGestureTarget(xPos, yPos, hasZ, zPos);
 
   float startScan = scan;
   float startFeed = feed;
+  float startZ = carriageZ;
   float targetScan = desiredScan;
   float targetFeed = desiredFeed;
-  float travel = dist(startScan, startFeed, targetScan, targetFeed);
+  float targetZ = desiredZ;
+  float travel = sqrt(
+    sq(targetScan - startScan) + sq(targetFeed - startFeed) + sq(targetZ - startZ)
+  );
 
   printGestureHeader(startScan, startFeed, xPos, yPos, targetScan, targetFeed);
 
@@ -633,19 +652,21 @@ void movePenBresenhamQuad(float xPos, float yPos) {
   }
 
   float currentLengths[FLAT_QUAD_AXIS_COUNT] = {0.0f, 0.0f, 0.0f, 0.0f};
-  computeQuadCableLengths(scan, feed, currentLengths);
+  computeQuadCableLengths(scan, feed, carriageZ, currentLengths);
 
   for ( long segmentIndex = 1; segmentIndex <= segmentCount; segmentIndex++ ) {
     float interpolation = float(segmentIndex) / float(segmentCount);
     float rawScan = startScan + (targetScan - startScan) * interpolation;
     float rawFeed = startFeed + (targetFeed - startFeed) * interpolation;
+    float rawZ = startZ + (targetZ - startZ) * interpolation;
 
     float adjustedScan = rawScan;
     float adjustedFeed = rawFeed;
+    float adjustedZ = clampQuadZ(rawZ);
     buildAdjustedPoint(rawScan, rawFeed, adjustedScan, adjustedFeed);
 
     float nextLengths[FLAT_QUAD_AXIS_COUNT] = {0.0f, 0.0f, 0.0f, 0.0f};
-    computeQuadCableLengths(adjustedScan, adjustedFeed, nextLengths);
+    computeQuadCableLengths(adjustedScan, adjustedFeed, adjustedZ, nextLengths);
 
     long axisSteps[FLAT_QUAD_AXIS_COUNT] = {0, 0, 0, 0};
     for ( byte axisIndex = 0; axisIndex < FLAT_QUAD_AXIS_COUNT; axisIndex++ ) {
@@ -662,6 +683,8 @@ void movePenBresenhamQuad(float xPos, float yPos) {
       Serial.print(adjustedScan, 4);
       Serial.print("\t");
       Serial.print(adjustedFeed, 4);
+      Serial.print("\t");
+      Serial.print(adjustedZ, 4);
       for ( byte axisIndex = 0; axisIndex < FLAT_QUAD_AXIS_COUNT; axisIndex++ ) {
         Serial.print("\t");
         Serial.print(axisSteps[axisIndex]);
@@ -676,6 +699,7 @@ void movePenBresenhamQuad(float xPos, float yPos) {
     }
     scan = adjustedScan;
     feed = adjustedFeed;
+    carriageZ = adjustedZ;
   }
 
   updateCableTelemetryFromPosition();
@@ -686,7 +710,16 @@ void movePenBresenhamQuad(float xPos, float yPos) {
 void movePenBresenham(float xPos, float yPos) {
   gestureCount++;
   if ( currentRobotKind == robotKindFlatQuadTension ) {
-    movePenBresenhamQuad(xPos, yPos);
+    movePenBresenhamQuad(xPos, yPos, false, 0.0f);
+    return;
+  }
+  movePenBresenhamHanging(xPos, yPos);
+}
+
+void movePenBresenham(float xPos, float yPos, float zPos) {
+  gestureCount++;
+  if ( currentRobotKind == robotKindFlatQuadTension ) {
+    movePenBresenhamQuad(xPos, yPos, true, zPos);
     return;
   }
   movePenBresenhamHanging(xPos, yPos);

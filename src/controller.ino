@@ -53,6 +53,8 @@ void controller() {
 
   pendingArgument1 = 0.0f;
   pendingArgument2 = 0.0f;
+  pendingArgument3 = 0.0f;
+  pendingArgument3Provided = false;
   pendingText1 = "";
   pendingText2 = "";
 
@@ -66,10 +68,16 @@ void controller() {
     if ( advCommand.equals("move") ) {
       pendingText1 = splitString(rawValue, ',', 0);
       pendingText2 = splitString(rawValue, ',', 1);
+      String pendingText3 = splitString(rawValue, ',', 2);
       pendingText1.trim();
       pendingText2.trim();
+      pendingText3.trim();
       pendingArgument1 = pendingText1.toFloat();
       pendingArgument2 = pendingText2.toFloat();
+      if ( pendingText3.length() ) {
+        pendingArgument3 = pendingText3.toFloat();
+        pendingArgument3Provided = true;
+      }
       pendingCommand = cmdStreamMove;
     } else if ( advCommand.equals("robotSetupWrite") ) {
       pendingCommand = cmdRobotSetupWrite;
@@ -94,11 +102,17 @@ void controller() {
   advCommand = splitString(command, ',', 0);
   pendingText1 = splitString(command, ',', 1);
   pendingText2 = splitString(command, ',', 2);
+  String pendingText3 = splitString(command, ',', 3);
   advCommand.trim();
   pendingText1.trim();
   pendingText2.trim();
+  pendingText3.trim();
   pendingArgument1 = pendingText1.toFloat();
   pendingArgument2 = pendingText2.toFloat();
+  if ( pendingText3.length() ) {
+    pendingArgument3 = pendingText3.toFloat();
+    pendingArgument3Provided = true;
+  }
 
   if ( advCommand.equals("drawFromFile") ) {
     pendingCommand = cmdDrawFromFile;
@@ -110,6 +124,8 @@ void controller() {
     pendingCommand = cmdMoveX;
   } else if ( advCommand.equals("moveY") ) {
     pendingCommand = cmdMoveY;
+  } else if ( advCommand.equals("moveZ") ) {
+    pendingCommand = cmdMoveZ;
   } else if ( advCommand.equals("moveLeft") ) {
     pendingCommand = cmdMoveLeft;
   } else if ( advCommand.equals("moveRight") ) {
