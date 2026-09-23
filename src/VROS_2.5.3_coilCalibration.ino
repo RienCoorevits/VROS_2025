@@ -8,8 +8,8 @@
 //https://tangrams.github.io/heightmapper
 
 const char FIRMWARE_PRODUCT_NAME[] = "VROS_caseController";
-const char FIRMWARE_SEMVER[] = "2.5.17";
-const char FIRMWARE_COMPAT_ID[] = "VROS_2.5.17_caseController";
+const char FIRMWARE_SEMVER[] = "2.5.19";
+const char FIRMWARE_COMPAT_ID[] = "VROS_2.5.19_caseController";
 const byte HOST_PROTOCOL_VERSION = 1;
 
 
@@ -111,7 +111,8 @@ struct LegacyRobotSetupPayloadV3 {
 
 struct RobotSetupPayload {
   byte robotKind;
-  byte reserved0[3];
+  byte motorInvertMask; // bit0=A, bit1=B, bit2=C, bit3=D; 1 = direction inverted
+  byte reserved0[2];
   float motorDistance;
   float scanOffset;
   float feedOffset;
@@ -213,7 +214,11 @@ const unsigned long ROBOT_SETUP_MAGIC = 0x56525331UL;
 const byte LEGACY_ROBOT_SETUP_VERSION_V1 = 1;
 const byte LEGACY_ROBOT_SETUP_VERSION_V2 = 2;
 const byte LEGACY_ROBOT_SETUP_VERSION_V3 = 3;
-const byte ROBOT_SETUP_VERSION = 4;
+const byte LEGACY_ROBOT_SETUP_VERSION_V4 = 4;
+const byte ROBOT_SETUP_VERSION = 5;
+const byte MOTOR_INVERT_MASK_VALID_BITS = 0x0F;
+// Motors A and B are inverted by default; C and D are not.
+const byte DEFAULT_MOTOR_INVERT_MASK = 0x03;
 const int ROBOT_SETUP_EEPROM_ADDRESS = 0;
 const unsigned long SPEED_SETTINGS_MAGIC = 0x53504431UL;
 const byte SPEED_SETTINGS_VERSION = 1;
@@ -234,7 +239,7 @@ static_assert(
 );
 const unsigned int DEFAULT_STEPPER_DELAY = 50;
 const unsigned int DEFAULT_STEPPER_PULSE = 50;
-const float DEFAULT_MICROSTEP_RESOLUTION = 0.0625f;
+const float DEFAULT_MICROSTEP_RESOLUTION = 0.125f;
 const float MICROSTEP_RESOLUTION_OPTIONS[] = {
   1.0f,
   0.5f,
@@ -247,7 +252,8 @@ const byte MICROSTEP_RESOLUTION_OPTION_COUNT = sizeof(MICROSTEP_RESOLUTION_OPTIO
 
 const RobotSetupPayload DEFAULT_ROBOT_SETUP = {
   robotKindHangingVBot,
-  {0, 0, 0},
+  DEFAULT_MOTOR_INVERT_MASK,
+  {0, 0},
   62.00f,
   10.00f,
   20.00f,
@@ -270,7 +276,8 @@ const RobotSetupPayload DEFAULT_ROBOT_SETUP = {
 
 const RobotSetupPayload DEFAULT_QUAD_ROBOT_SETUP = {
   robotKindFlatQuadTension,
-  {0, 0, 0},
+  DEFAULT_MOTOR_INVERT_MASK,
+  {0, 0},
   0.00f,
   0.00f,
   0.00f,
@@ -394,6 +401,7 @@ enum CommandType {
   cmdPause,
   cmdContinue,
   cmdPosition,
+  cmdSetPosition,
   cmdGetSpeed,
   cmdSaveSpeed,
   cmdRetrySD,
@@ -639,6 +647,7 @@ void normalizeRobotSetup(RobotSetupPayload& payload) {
     payload.robotKind = robotKindHangingVBot;
     payload.width = payload.motorDistance - payload.scanOffset * 2.0f;
   }
+  payload.motorInvertMask &= MOTOR_INVERT_MASK_VALID_BITS;
   for ( byte index = 0; index < sizeof(payload.reserved0); index++ ) {
     payload.reserved0[index] = 0;
   }
@@ -830,6 +839,22 @@ boolean loadRobotSetupFromEEPROM() {
     RobotSetupBlock block;
     EEPROM.get(ROBOT_SETUP_EEPROM_ADDRESS, block);
     if ( block.crc32 != calculateRobotSetupCRC(block.payload) ) return false;
+    if ( !validateRobotSetup(block.payload) ) return false;
+    applyRobotSetup(block.payload);
+    return true;
+  }
+
+  if (
+    header.version == LEGACY_ROBOT_SETUP_VERSION_V4
+    && header.payloadSize == sizeof(RobotSetupPayload)
+  ) {
+    // V4 has the same layout; its motorInvertMask byte was reserved (always 0).
+    RobotSetupBlock block;
+    EEPROM.get(ROBOT_SETUP_EEPROM_ADDRESS, block);
+    if ( block.crc32 != calculateRobotSetupCRC(block.payload) ) return false;
+
+    block.payload.motorInvertMask = DEFAULT_MOTOR_INVERT_MASK;
+    normalizeRobotSetup(block.payload);
     if ( !validateRobotSetup(block.payload) ) return false;
     applyRobotSetup(block.payload);
     return true;
@@ -1148,6 +1173,10 @@ void printRobotSetup() {
   emitProtocolFloat(F("config"), F("robotSetup.quadCableCFeed"), quadCableCFeed);
   emitProtocolFloat(F("config"), F("robotSetup.quadCableDFeed"), quadCableDFeed);
   emitProtocolFloat(F("config"), F("robotSetup.quadMotorHeight"), quadMotorHeight);
+  emitProtocolBool(F("config"), F("robotSetup.motorAInverted"), robotSetup.motorInvertMask & 0x01);
+  emitProtocolBool(F("config"), F("robotSetup.motorBInverted"), robotSetup.motorInvertMask & 0x02);
+  emitProtocolBool(F("config"), F("robotSetup.motorCInverted"), robotSetup.motorInvertMask & 0x04);
+  emitProtocolBool(F("config"), F("robotSetup.motorDInverted"), robotSetup.motorInvertMask & 0x08);
   emitSpeedStatus();
 }
 
@@ -1271,6 +1300,28 @@ boolean parseRobotSetupWritePayload(const String& rawValue, RobotSetupPayload& p
       payload.quadCableDFeed = fieldValue.toFloat();
     } else if ( fieldName == "quadMotorHeight" ) {
       payload.quadMotorHeight = fieldValue.toFloat();
+    } else if (
+      fieldName == "motorAInverted"
+      || fieldName == "motorBInverted"
+      || fieldName == "motorCInverted"
+      || fieldName == "motorDInverted"
+    ) {
+      boolean inverted;
+      if ( fieldValue == "1" || fieldValue == "true" ) {
+        inverted = true;
+      } else if ( fieldValue == "0" || fieldValue == "false" ) {
+        inverted = false;
+      } else {
+        return failRobotSetupPayloadParse(
+          fieldName + String(F(" must be 0 or 1"))
+        );
+      }
+      byte motorBit = byte(1 << (fieldName.charAt(5) - 'A'));
+      if ( inverted ) {
+        payload.motorInvertMask |= motorBit;
+      } else {
+        payload.motorInvertMask &= byte(~motorBit);
+      }
     } else {
       return failRobotSetupPayloadParse(
         String(F("unsupported field '")) + fieldName + String(F("'"))
@@ -1377,8 +1428,7 @@ void setup() {
   Serial.println("_____________________________________");
   Serial.println("");
 
-  currentA = getA(scan, feed);
-  currentB = getB(scan, feed);
+  updateCableTelemetryFromPosition();
 
   enterState(noSD);
   if ( initialiseSD() ) enterState(idle);
@@ -1395,6 +1445,7 @@ void setup() {
   Serial.println(F(">pause"));
   Serial.println(F(">continue"));
   Serial.println(F(">move, scan, feed[,z]"));
+  Serial.println(F(">setPosition, scan, feed[,z]"));
   Serial.println(F(">moveX, deltaScan"));
   Serial.println(F(">moveY, deltaFeed"));
   Serial.println(F(">moveZ, deltaZ"));
@@ -1421,9 +1472,9 @@ void setup() {
   Serial.println(F(">getSpeed"));
   Serial.println(F(">saveSpeed"));
   Serial.println(F(">robotSetupGet"));
-  Serial.println(F(">robotSetupWrite\\t62,10,20,50,0.5,82,1,0.997,35[,0.0625]"));
-  Serial.println(F(">robotSetupWrite\\trobotKind=hanging_vbot,motorDistance=62,scanOffset=10,feedOffset=20,height=50,lineResolution=0.5,homePosition=82,leftCoilFeed=1,rightCoilFeed=0.997,stepsToCm=35,microstepResolution=0.0625"));
-  Serial.println(F(">robotSetupWrite\\trobotKind=flat_quad_tension,scanOffset=0,feedOffset=0,width=42,height=50,lineResolution=0.5,stepsToCm=35,microstepResolution=0.0625,quadHomeScan=21,quadHomeFeed=25,quadCableAFeed=1,quadCableBFeed=1,quadCableCFeed=1,quadCableDFeed=1,quadMotorHeight=10"));
+  Serial.println(F(">robotSetupWrite\\t62,10,20,50,0.5,82,1,0.997,35[,0.125]"));
+  Serial.println(F(">robotSetupWrite\\trobotKind=hanging_vbot,motorDistance=62,scanOffset=10,feedOffset=20,height=50,lineResolution=0.5,homePosition=82,leftCoilFeed=1,rightCoilFeed=0.997,stepsToCm=35,microstepResolution=0.125"));
+  Serial.println(F(">robotSetupWrite\\trobotKind=flat_quad_tension,scanOffset=0,feedOffset=0,width=42,height=50,lineResolution=0.5,stepsToCm=35,microstepResolution=0.125,quadHomeScan=21,quadHomeFeed=25,quadCableAFeed=1,quadCableBFeed=1,quadCableCFeed=1,quadCableDFeed=1,quadMotorHeight=10,motorAInverted=1,motorBInverted=1,motorCInverted=0,motorDInverted=0"));
   Serial.println(F(">robotSetupDefaults"));
   Serial.println(F(">clearEEPROM"));
 }
@@ -1627,6 +1678,26 @@ void moveToTargetAndReport(float targetScan, float targetFeed) {
   moveToTargetAndReport(targetScan, targetFeed, carriageZ);
 }
 
+void setLogicalPositionAndSave(float nextScan, float nextFeed, float nextZ) {
+  scan = nextScan;
+  feed = nextFeed;
+  carriageZ = currentRobotKind == robotKindFlatQuadTension ? clampQuadZ(nextZ) : 0.0f;
+  desiredScan = scan;
+  desiredFeed = feed;
+  desiredZ = carriageZ;
+  updateCableTelemetryFromPosition();
+  savePositionToEEPROM();
+
+  Serial.print(F("position set to\t"));
+  Serial.print(scan);
+  Serial.print(F(","));
+  Serial.print(feed);
+  Serial.print(F(","));
+  Serial.println(carriageZ);
+  emitProtocolText(F("status"), F("currentAction"), F("position set"));
+  printPosition();
+}
+
 boolean stepMotorAndReport(byte axisIndex, long stepAmount) {
   if ( !stepActiveMotionAxis(axisIndex, stepAmount) ) {
     failPendingCommand(F("motor unavailable for current robot"));
@@ -1651,13 +1722,14 @@ boolean stepAllMotorsAndReport(long stepAmount) {
     return false;
   }
 
+  long effectiveStepAmount = -stepAmount;
   Serial.print(F("stepping all motors: "));
-  Serial.println(stepAmount);
+  Serial.println(effectiveStepAmount);
   emitProtocolText(F("status"), F("currentAction"), F("stepping all motors"));
 
   long stepPlan[MAX_MOTION_AXES] = {0, 0, 0, 0};
   for ( byte axisIndex = 0; axisIndex < activeMotionAxisCount; axisIndex++ ) {
-    stepPlan[axisIndex] = stepAmount;
+    stepPlan[axisIndex] = effectiveStepAmount;
   }
   runMotionSteps(stepPlan, activeMotionAxisCount);
   return true;
@@ -1822,6 +1894,17 @@ boolean handleManualMotionCommand() {
       }
       finishPendingCommand();
       return true;
+
+    case cmdSetPosition: {
+      if ( pendingArgument3Provided && currentRobotKind != robotKindFlatQuadTension && pendingArgument3 != 0.0f ) {
+        failPendingCommand(F("z positions are only available for flat quad"));
+        return true;
+      }
+      float nextZ = pendingArgument3Provided ? pendingArgument3 : carriageZ;
+      setLogicalPositionAndSave(pendingArgument1, pendingArgument2, nextZ);
+      finishPendingCommand();
+      return true;
+    }
 
     case cmdStreamMove:
       if ( !motionImplementedForRobotKind(currentRobotKind) ) {

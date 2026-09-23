@@ -17,11 +17,6 @@ const int HANGING_VBOT_ENABLE_PINS[HANGING_VBOT_AXIS_COUNT] = {
   -1
 };
 
-const boolean HANGING_VBOT_DIR_INVERTED[HANGING_VBOT_AXIS_COUNT] = {
-  false,
-  false
-};
-
 // Standard RAMPS 1.4 assignments as defined by Marlin:
 // X  step/dir/enable: 54/55/38
 // Y  step/dir/enable: 60/61/56
@@ -64,14 +59,6 @@ const int FLAT_QUAD_ENABLE_PINS[FLAT_QUAD_AXIS_COUNT] = {
   RAMPS_14_Y_ENABLE_PIN,
   RAMPS_14_E0_ENABLE_PIN,
   RAMPS_14_E1_ENABLE_PIN
-};
-
-// Keep these false until the physical spool orientations are verified on hardware.
-const boolean FLAT_QUAD_DIR_INVERTED[FLAT_QUAD_AXIS_COUNT] = {
-  false,
-  false,
-  false,
-  false
 };
 
 enum PulseTimerPhase {
@@ -217,12 +204,18 @@ boolean quadMotionPinsConfigured() {
 }
 
 void configureMotionAxisMapForRobotKind(RobotKindId robotKind) {
+  // Axis 0..3 = motor A..D; inversion comes from the robot setup (EEPROM).
+  boolean dirInverted[MAX_MOTION_AXES];
+  for ( byte axisIndex = 0; axisIndex < MAX_MOTION_AXES; axisIndex++ ) {
+    dirInverted[axisIndex] = (robotSetup.motorInvertMask >> axisIndex) & 0x01;
+  }
+
   if ( robotKind == robotKindFlatQuadTension && quadMotionPinsConfigured() ) {
     configureMotionAxisMap(
       FLAT_QUAD_DIR_PINS,
       FLAT_QUAD_STEP_PINS,
       FLAT_QUAD_ENABLE_PINS,
-      FLAT_QUAD_DIR_INVERTED,
+      dirInverted,
       FLAT_QUAD_AXIS_COUNT
     );
     return;
@@ -233,7 +226,7 @@ void configureMotionAxisMapForRobotKind(RobotKindId robotKind) {
       HANGING_VBOT_DIR_PINS,
       HANGING_VBOT_STEP_PINS,
       HANGING_VBOT_ENABLE_PINS,
-      HANGING_VBOT_DIR_INVERTED,
+      dirInverted,
       HANGING_VBOT_AXIS_COUNT
     );
     return;

@@ -184,6 +184,8 @@ void controller() {
     pendingCommand = cmdContinue;
   } else if ( command.equals("position") ) {
     pendingCommand = cmdPosition;
+  } else if ( advCommand.equals("setPosition") ) {
+    pendingCommand = cmdSetPosition;
   } else if ( command.equals("getSpeed") ) {
     pendingCommand = cmdGetSpeed;
   } else if ( command.equals("saveSpeed") ) {

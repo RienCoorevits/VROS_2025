@@ -99,7 +99,7 @@ The firmware now exposes a structured `vros` compatibility handshake for the Con
 Current firmware banner:
 
 ```text
-VROS_2.5.17_caseController
+VROS_2.5.19_caseController
 ```
 
 Current host protocol version:
@@ -140,7 +140,7 @@ Representative lines:
 
 ```text
 vros	compat	protocolVersion	1
-vros	compat	firmwareVersion	VROS_2.5.17_caseController
+vros	compat	firmwareVersion	VROS_2.5.19_caseController
 vros	status	state	idle
 vros	status	position	21.0000,31.0000
 vros	config	robotSetupStatus	valid
@@ -203,6 +203,7 @@ Robot setup fields now persisted in EEPROM:
 - `quadCableCFeed`
 - `quadCableDFeed`
 - `quadMotorHeight`
+- `motorAInverted`, `motorBInverted`, `motorCInverted`, `motorDInverted` (stored as a 4-bit mask in one payload byte; A and B default to inverted)
 
 Derived/runtime values that are not stored directly:
 
@@ -229,6 +230,7 @@ This is intentional because silent auto-repair hides configuration mistakes and 
 
 Position EEPROM behavior is different:
 
+- completed logical moves persist the current `scan`, `feed`, and `z` position in the position block
 - the firmware still attempts to migrate legacy carriage position values into the new position block
 - if that fails, position falls back to origin-like defaults
 
@@ -256,8 +258,8 @@ These commands were added or formalized for Control Station support:
 ```text
 robotSetupGet
 robotSetupWrite	<motorDistance>,<scanOffset>,<feedOffset>,<height>,<lineResolution>,<homePosition>,<leftCoilFeed>,<rightCoilFeed>,<stepsToCm>[,<microstepResolution>]
-robotSetupWrite	robotKind=hanging_vbot,motorDistance=62,scanOffset=10,feedOffset=20,height=50,lineResolution=0.5,homePosition=82,leftCoilFeed=1,rightCoilFeed=0.997,stepsToCm=35,microstepResolution=0.0625
-robotSetupWrite	robotKind=flat_quad_tension,scanOffset=0,feedOffset=0,width=42,height=50,lineResolution=0.5,stepsToCm=35,microstepResolution=0.0625,quadHomeScan=21,quadHomeFeed=25,quadCableAFeed=1,quadCableBFeed=1,quadCableCFeed=1,quadCableDFeed=1,quadMotorHeight=10
+robotSetupWrite	robotKind=hanging_vbot,motorDistance=62,scanOffset=10,feedOffset=20,height=50,lineResolution=0.5,homePosition=82,leftCoilFeed=1,rightCoilFeed=0.997,stepsToCm=35,microstepResolution=0.125
+robotSetupWrite	robotKind=flat_quad_tension,scanOffset=0,feedOffset=0,width=42,height=50,lineResolution=0.5,stepsToCm=35,microstepResolution=0.125,quadHomeScan=21,quadHomeFeed=25,quadCableAFeed=1,quadCableBFeed=1,quadCableCFeed=1,quadCableDFeed=1,quadMotorHeight=10,motorAInverted=1,motorBInverted=1,motorCInverted=0,motorDInverted=0
 robotSetupLoad
 robotSetupDefaults
 clearEEPROM
@@ -332,6 +334,7 @@ Examples of supported commands:
 ```text
 drawFromFile,<file>
 move,<scan>,<feed>[,<z>]
+setPosition,<scan>,<feed>[,<z>]
 moveZ,<deltaZ>
 moveX,<deltaScan>
 moveY,<deltaFeed>
@@ -384,6 +387,7 @@ State-sensitive commands:
 Jog and debug notes:
 
 - `move,<scan>,<feed>,<z>` is available on the flat quad path; omitting `z` keeps the current logical `z`
+- `setPosition,<scan>,<feed>,<z>` overwrites the logical position without moving motors, recomputes cable telemetry, and saves the new position to EEPROM for failure recovery
 - `moveZ,<deltaZ>` is a flat-quad-only relative jog along the logical `z` axis
 - `moveX` and `moveY` are relative jogs in centimeters from the current logical position
 - `moveLeft`, `moveRight`, `moveUp`, and `moveDown` are directional jog aliases; in this coordinate system, `up` means negative feed and `down` means positive feed
