@@ -8,8 +8,8 @@
 //https://tangrams.github.io/heightmapper
 
 const char FIRMWARE_PRODUCT_NAME[] = "VROS_caseController";
-const char FIRMWARE_SEMVER[] = "2.5.19";
-const char FIRMWARE_COMPAT_ID[] = "VROS_2.5.19_caseController";
+const char FIRMWARE_SEMVER[] = "2.5.26";
+const char FIRMWARE_COMPAT_ID[] = "VROS_2.5.26_caseController";
 const byte HOST_PROTOCOL_VERSION = 1;
 
 
@@ -196,6 +196,23 @@ struct PositionBlock {
   unsigned long crc32;
 };
 
+struct QuadWeightFieldSettingsPayload {
+  byte enabled;
+  byte reserved[3];
+  float maxPayoutCm;
+  float edgeExponent;
+  float cornerExponent;
+};
+
+struct QuadWeightFieldSettingsBlock {
+  unsigned long magic;
+  byte version;
+  byte payloadSize;
+  unsigned int flags;
+  unsigned long crc32;
+  QuadWeightFieldSettingsPayload payload;
+};
+
 struct SpeedSettingsPayload {
   unsigned int stepperDelay;
   unsigned int stepperPulse;
@@ -229,6 +246,9 @@ const int POSITION_EEPROM_ADDRESS = 128;
 const int LEGACY_POSITION_BLOCK_EEPROM_ADDRESS = 64;
 const int LEGACY_FEED_EEPROM_ADDRESS = 0;
 const int LEGACY_SCAN_EEPROM_ADDRESS = 15;
+const unsigned long QUAD_WEIGHT_FIELD_SETTINGS_MAGIC = 0x51574631UL;
+const byte QUAD_WEIGHT_FIELD_SETTINGS_VERSION = 1;
+const int QUAD_WEIGHT_FIELD_SETTINGS_EEPROM_ADDRESS = 160;
 static_assert(
   SPEED_SETTINGS_EEPROM_ADDRESS >= ROBOT_SETUP_EEPROM_ADDRESS + sizeof(RobotSetupBlock),
   "Speed settings EEPROM address overlaps robot setup block"
@@ -236,6 +256,10 @@ static_assert(
 static_assert(
   SPEED_SETTINGS_EEPROM_ADDRESS + sizeof(SpeedSettingsBlock) <= POSITION_EEPROM_ADDRESS,
   "Speed settings EEPROM block overlaps position block"
+);
+static_assert(
+  QUAD_WEIGHT_FIELD_SETTINGS_EEPROM_ADDRESS >= POSITION_EEPROM_ADDRESS + sizeof(PositionBlock),
+  "Quad weight field settings EEPROM address overlaps position block"
 );
 const unsigned int DEFAULT_STEPPER_DELAY = 50;
 const unsigned int DEFAULT_STEPPER_PULSE = 50;
@@ -249,6 +273,14 @@ const float MICROSTEP_RESOLUTION_OPTIONS[] = {
   0.03125f
 };
 const byte MICROSTEP_RESOLUTION_OPTION_COUNT = sizeof(MICROSTEP_RESOLUTION_OPTIONS) / sizeof(MICROSTEP_RESOLUTION_OPTIONS[0]);
+
+const QuadWeightFieldSettingsPayload DEFAULT_QUAD_WEIGHT_FIELD_SETTINGS = {
+  1,
+  {0, 0, 0},
+  1.00f,
+  2.00f,
+  1.00f
+};
 
 const RobotSetupPayload DEFAULT_ROBOT_SETUP = {
   robotKindHangingVBot,
@@ -300,6 +332,7 @@ const RobotSetupPayload DEFAULT_QUAD_ROBOT_SETUP = {
 
 RobotSetupPayload robotSetup = DEFAULT_ROBOT_SETUP;
 boolean robotSetupEEPROMValid = false;
+boolean quadWeightFieldSettingsEEPROMValid = false;
 
 RobotKindId currentRobotKind = robotKindHangingVBot;
 float motorDistance = DEFAULT_ROBOT_SETUP.motorDistance;
@@ -320,7 +353,12 @@ float quadCableBFeed = DEFAULT_ROBOT_SETUP.quadCableBFeed;
 float quadCableCFeed = DEFAULT_ROBOT_SETUP.quadCableCFeed;
 float quadCableDFeed = DEFAULT_ROBOT_SETUP.quadCableDFeed;
 float quadMotorHeight = DEFAULT_ROBOT_SETUP.quadMotorHeight;
+boolean quadWeightFieldEnabled = DEFAULT_QUAD_WEIGHT_FIELD_SETTINGS.enabled != 0;
+float quadWeightFieldMaxPayoutCm = DEFAULT_QUAD_WEIGHT_FIELD_SETTINGS.maxPayoutCm;
+float quadWeightFieldEdgeExponent = DEFAULT_QUAD_WEIGHT_FIELD_SETTINGS.edgeExponent;
+float quadWeightFieldCornerExponent = DEFAULT_QUAD_WEIGHT_FIELD_SETTINGS.cornerExponent;
 String lastRobotSetupPayloadError = "";
+String lastQuadWeightFieldSettingsError = "";
 unsigned long lastUnsupportedMotionReportAt = 0UL;
 
 boolean detectCase = false;
@@ -409,6 +447,10 @@ enum CommandType {
   cmdRobotSetupWrite,
   cmdRobotSetupLoad,
   cmdRobotSetupDefaults,
+  cmdQuadWeightFieldGet,
+  cmdQuadWeightFieldSet,
+  cmdQuadWeightFieldAdjust,
+  cmdQuadWeightFieldDefaults,
   cmdClearEEPROM
 };
 
@@ -503,6 +545,15 @@ unsigned long calculateSpeedSettingsCRC(const SpeedSettingsPayload& payload) {
   crc = crc32Update(crc, (const byte*)&payload.stepperDelay, sizeof(payload.stepperDelay));
   crc = crc32Update(crc, (const byte*)&payload.stepperPulse, sizeof(payload.stepperPulse));
   return crc;
+}
+
+unsigned long calculateQuadWeightFieldSettingsCRC(const QuadWeightFieldSettingsPayload& payload) {
+  QuadWeightFieldSettingsPayload normalized = payload;
+  normalized.enabled = normalized.enabled ? 1 : 0;
+  for ( byte index = 0; index < sizeof(normalized.reserved); index++ ) {
+    normalized.reserved[index] = 0;
+  }
+  return crc32Update(0UL, (const byte*)&normalized, sizeof(QuadWeightFieldSettingsPayload));
 }
 
 boolean validFloatRange(float value, float minValue, float maxValue) {
@@ -696,6 +747,39 @@ String describeRobotSetupValidationError(const RobotSetupPayload& payload) {
 boolean validateRobotSetup(const RobotSetupPayload& payload) {
   lastRobotSetupPayloadError = describeRobotSetupValidationError(payload);
   return !lastRobotSetupPayloadError.length();
+}
+
+void normalizeQuadWeightFieldSettings(QuadWeightFieldSettingsPayload& payload) {
+  payload.enabled = payload.enabled ? 1 : 0;
+  for ( byte index = 0; index < sizeof(payload.reserved); index++ ) {
+    payload.reserved[index] = 0;
+  }
+}
+
+String describeQuadWeightFieldSettingsValidationError(const QuadWeightFieldSettingsPayload& payload) {
+  if ( payload.enabled > 1 ) return F("enabled must be 0 or 1");
+  if ( !validFloatRange(payload.maxPayoutCm, 0.0f, 20.0f) ) return String(F("maxPayoutCm ")) + formatFloatRangeDetail(payload.maxPayoutCm, 0.0f, 20.0f);
+  if ( !validFloatRange(payload.edgeExponent, 0.25f, 8.0f) ) return String(F("edgeExponent ")) + formatFloatRangeDetail(payload.edgeExponent, 0.25f, 8.0f);
+  if ( !validFloatRange(payload.cornerExponent, 0.25f, 8.0f) ) return String(F("cornerExponent ")) + formatFloatRangeDetail(payload.cornerExponent, 0.25f, 8.0f);
+  return "";
+}
+
+boolean validateQuadWeightFieldSettings(const QuadWeightFieldSettingsPayload& payload) {
+  lastQuadWeightFieldSettingsError = describeQuadWeightFieldSettingsValidationError(payload);
+  return !lastQuadWeightFieldSettingsError.length();
+}
+
+void applyQuadWeightFieldSettings(const QuadWeightFieldSettingsPayload& payload) {
+  QuadWeightFieldSettingsPayload normalized = payload;
+  normalizeQuadWeightFieldSettings(normalized);
+  quadWeightFieldEnabled = normalized.enabled != 0;
+  quadWeightFieldMaxPayoutCm = normalized.maxPayoutCm;
+  quadWeightFieldEdgeExponent = normalized.edgeExponent;
+  quadWeightFieldCornerExponent = normalized.cornerExponent;
+}
+
+void applyDefaultQuadWeightFieldSettings() {
+  applyQuadWeightFieldSettings(DEFAULT_QUAD_WEIGHT_FIELD_SETTINGS);
 }
 
 void applyRobotSetup(const RobotSetupPayload& payload) {
@@ -1055,6 +1139,39 @@ void saveSpeedSettingsToEEPROM() {
   EEPROM.put(SPEED_SETTINGS_EEPROM_ADDRESS, block);
 }
 
+boolean loadQuadWeightFieldSettingsFromEEPROM() {
+  QuadWeightFieldSettingsBlock block;
+  EEPROM.get(QUAD_WEIGHT_FIELD_SETTINGS_EEPROM_ADDRESS, block);
+  if ( block.magic != QUAD_WEIGHT_FIELD_SETTINGS_MAGIC ) return false;
+  if ( block.version != QUAD_WEIGHT_FIELD_SETTINGS_VERSION ) return false;
+  if ( block.payloadSize != sizeof(QuadWeightFieldSettingsPayload) ) return false;
+  normalizeQuadWeightFieldSettings(block.payload);
+  if ( block.crc32 != calculateQuadWeightFieldSettingsCRC(block.payload) ) return false;
+  if ( !validateQuadWeightFieldSettings(block.payload) ) return false;
+  applyQuadWeightFieldSettings(block.payload);
+  return true;
+}
+
+void saveQuadWeightFieldSettingsToEEPROM() {
+  QuadWeightFieldSettingsPayload payload = {
+    quadWeightFieldEnabled ? byte(1) : byte(0),
+    {0, 0, 0},
+    quadWeightFieldMaxPayoutCm,
+    quadWeightFieldEdgeExponent,
+    quadWeightFieldCornerExponent
+  };
+  normalizeQuadWeightFieldSettings(payload);
+
+  QuadWeightFieldSettingsBlock block;
+  block.magic = QUAD_WEIGHT_FIELD_SETTINGS_MAGIC;
+  block.version = QUAD_WEIGHT_FIELD_SETTINGS_VERSION;
+  block.payloadSize = sizeof(QuadWeightFieldSettingsPayload);
+  block.flags = 0;
+  block.payload = payload;
+  block.crc32 = calculateQuadWeightFieldSettingsCRC(block.payload);
+  EEPROM.put(QUAD_WEIGHT_FIELD_SETTINGS_EEPROM_ADDRESS, block);
+}
+
 void clearAllEEPROM() {
   for ( unsigned int address = 0; address < EEPROM.length(); address++ ) {
     EEPROM.update(address, 0xFF);
@@ -1108,6 +1225,11 @@ void updateCableTelemetryFromPosition() {
   currentCableLengths[3] = 0.0f;
 }
 
+void syncFlatQuadCableTelemetryFromCurrentLengths() {
+  currentA = currentCableLengths[0];
+  currentB = currentCableLengths[1];
+}
+
 void printMotionCapability() {
   emitProtocolText(
     F("status"),
@@ -1146,6 +1268,18 @@ void printSpeed() {
   emitSpeedStatus();
 }
 
+void printQuadWeightFieldSettings() {
+  emitProtocolText(
+    F("config"),
+    F("quadWeightFieldStatus"),
+    quadWeightFieldSettingsEEPROMValid ? F("valid") : F("default")
+  );
+  emitProtocolBool(F("config"), F("quadWeightField.enabled"), quadWeightFieldEnabled);
+  emitProtocolFloat(F("config"), F("quadWeightField.maxPayoutCm"), quadWeightFieldMaxPayoutCm);
+  emitProtocolFloat(F("config"), F("quadWeightField.edgeExponent"), quadWeightFieldEdgeExponent);
+  emitProtocolFloat(F("config"), F("quadWeightField.cornerExponent"), quadWeightFieldCornerExponent);
+}
+
 void printRobotSetup() {
   emitProtocolText(F("status"), F("robotKind"), getRobotKindToken(currentRobotKind));
   printMotionCapability();
@@ -1177,6 +1311,7 @@ void printRobotSetup() {
   emitProtocolBool(F("config"), F("robotSetup.motorBInverted"), robotSetup.motorInvertMask & 0x02);
   emitProtocolBool(F("config"), F("robotSetup.motorCInverted"), robotSetup.motorInvertMask & 0x04);
   emitProtocolBool(F("config"), F("robotSetup.motorDInverted"), robotSetup.motorInvertMask & 0x08);
+  printQuadWeightFieldSettings();
   emitSpeedStatus();
 }
 
@@ -1333,6 +1468,46 @@ boolean parseRobotSetupWritePayload(const String& rawValue, RobotSetupPayload& p
   return validateRobotSetup(payload);
 }
 
+boolean parseQuadWeightFieldSettingsPayload(
+  const String& rawValue,
+  QuadWeightFieldSettingsPayload& payload
+) {
+  lastQuadWeightFieldSettingsError = "";
+  String enabledText = splitString(rawValue, ',', 0);
+  String maxPayoutText = splitString(rawValue, ',', 1);
+  String edgeExponentText = splitString(rawValue, ',', 2);
+  String cornerExponentText = splitString(rawValue, ',', 3);
+  enabledText.trim();
+  maxPayoutText.trim();
+  edgeExponentText.trim();
+  cornerExponentText.trim();
+
+  if (
+    !enabledText.length()
+    || !maxPayoutText.length()
+    || !edgeExponentText.length()
+    || !cornerExponentText.length()
+  ) {
+    lastQuadWeightFieldSettingsError = F("expected enabled,maxPayoutCm,edgeExponent,cornerExponent");
+    return false;
+  }
+
+  if ( enabledText != "0" && enabledText != "1" ) {
+    lastQuadWeightFieldSettingsError = F("enabled must be 0 or 1");
+    return false;
+  }
+
+  payload.enabled = enabledText == "1" ? 1 : 0;
+  payload.reserved[0] = 0;
+  payload.reserved[1] = 0;
+  payload.reserved[2] = 0;
+  payload.maxPayoutCm = maxPayoutText.toFloat();
+  payload.edgeExponent = edgeExponentText.toFloat();
+  payload.cornerExponent = cornerExponentText.toFloat();
+  normalizeQuadWeightFieldSettings(payload);
+  return validateQuadWeightFieldSettings(payload);
+}
+
 
 ///////////////////////////////////////////////////
 // SETUP                                         //
@@ -1366,6 +1541,11 @@ void setup() {
 
   if ( !loadSpeedSettingsFromEEPROM() ) {
     applyDefaultSpeedSettings();
+  }
+
+  quadWeightFieldSettingsEEPROMValid = loadQuadWeightFieldSettingsFromEEPROM();
+  if ( !quadWeightFieldSettingsEEPROMValid ) {
+    applyDefaultQuadWeightFieldSettings();
   }
 
   if ( !loadPositionFromEEPROM() ) {
@@ -1476,6 +1656,10 @@ void setup() {
   Serial.println(F(">robotSetupWrite\\trobotKind=hanging_vbot,motorDistance=62,scanOffset=10,feedOffset=20,height=50,lineResolution=0.5,homePosition=82,leftCoilFeed=1,rightCoilFeed=0.997,stepsToCm=35,microstepResolution=0.125"));
   Serial.println(F(">robotSetupWrite\\trobotKind=flat_quad_tension,scanOffset=0,feedOffset=0,width=42,height=50,lineResolution=0.5,stepsToCm=35,microstepResolution=0.125,quadHomeScan=21,quadHomeFeed=25,quadCableAFeed=1,quadCableBFeed=1,quadCableCFeed=1,quadCableDFeed=1,quadMotorHeight=10,motorAInverted=1,motorBInverted=1,motorCInverted=0,motorDInverted=0"));
   Serial.println(F(">robotSetupDefaults"));
+  Serial.println(F(">quadWeightFieldGet"));
+  Serial.println(F(">quadWeightFieldSet\\t1,1.0,2.0,1.0"));
+  Serial.println(F(">quadWeightFieldAdjust"));
+  Serial.println(F(">quadWeightFieldDefaults"));
   Serial.println(F(">clearEEPROM"));
 }
 
@@ -1790,6 +1974,54 @@ boolean feedQuadHomeCableAndReport() {
   return true;
 }
 
+boolean adjustQuadWeightFieldToCurrentPosition() {
+  if ( currentRobotKind != robotKindFlatQuadTension ) {
+    failPendingCommand(F("quadWeightFieldAdjust is only available for flat quad"));
+    return false;
+  }
+  if ( !motionImplementedForRobotKind(currentRobotKind) ) {
+    failPendingCommand(F("quad motion not implemented"));
+    return false;
+  }
+  if ( streamQueueActive() ) {
+    failPendingCommand(F("stream move queue not empty"));
+    return false;
+  }
+
+  float targetLengths[FLAT_QUAD_AXIS_COUNT] = {0.0f, 0.0f, 0.0f, 0.0f};
+  computeQuadCableLengths(scan, feed, carriageZ, targetLengths);
+
+  long axisSteps[FLAT_QUAD_AXIS_COUNT] = {0, 0, 0, 0};
+  boolean hasMotion = false;
+  for ( byte axisIndex = 0; axisIndex < FLAT_QUAD_AXIS_COUNT; axisIndex++ ) {
+    axisSteps[axisIndex] = cableDeltaToSteps(
+      targetLengths[axisIndex] - currentCableLengths[axisIndex],
+      getQuadCableCompensation(axisIndex)
+    );
+    if ( axisSteps[axisIndex] != 0 ) hasMotion = true;
+  }
+
+  Serial.println(F("adjusting quad cables to current weight field"));
+  emitProtocolText(F("status"), F("currentAction"), F("adjusting weight field cables"));
+  if ( hasMotion ) {
+    runMotionSteps(axisSteps, FLAT_QUAD_AXIS_COUNT);
+  }
+
+  for ( byte axisIndex = 0; axisIndex < FLAT_QUAD_AXIS_COUNT; axisIndex++ ) {
+    currentCableLengths[axisIndex] += cableStepsToDeltaCm(
+      axisSteps[axisIndex],
+      getQuadCableCompensation(axisIndex)
+    );
+  }
+  syncFlatQuadCableTelemetryFromCurrentLengths();
+  savePositionToEEPROM();
+  Serial.println(F("quad weight field cable adjustment complete"));
+  emitProtocolText(F("event"), F("moveComplete"), String(scan, 4) + F(",") + String(feed, 4));
+  emitProtocolFloat(F("event"), F("moveCompleteZ"), carriageZ);
+  emitProtocolText(F("status"), F("currentAction"), F("weight field adjusted"));
+  return true;
+}
+
 boolean handleSharedCommand() {
   if ( !hasPendingCommand ) return false;
 
@@ -1856,9 +2088,16 @@ boolean handleSharedCommand() {
       finishPendingCommand();
       return true;
 
+    case cmdQuadWeightFieldGet:
+      printQuadWeightFieldSettings();
+      finishPendingCommand();
+      return true;
+
     case cmdClearEEPROM:
       clearAllEEPROM();
       robotSetupEEPROMValid = false;
+      quadWeightFieldSettingsEEPROMValid = false;
+      applyDefaultQuadWeightFieldSettings();
       Serial.println(F("eeprom cleared"));
       printRobotSetup();
       finishPendingCommand();
@@ -2217,6 +2456,41 @@ boolean handleManualMotionCommand() {
       updateCableTelemetryFromPosition();
       printRobotSetup();
       printPosition();
+      finishPendingCommand();
+      return true;
+
+    case cmdQuadWeightFieldSet: {
+      QuadWeightFieldSettingsPayload payload;
+      if ( !parseQuadWeightFieldSettingsPayload(pendingText1, payload) ) {
+        String message = F("invalid quad weight field payload");
+        if ( lastQuadWeightFieldSettingsError.length() ) {
+          message += F(": ");
+          message += lastQuadWeightFieldSettingsError;
+        }
+        failPendingCommand(message);
+        return true;
+      }
+      applyQuadWeightFieldSettings(payload);
+      saveQuadWeightFieldSettingsToEEPROM();
+      quadWeightFieldSettingsEEPROMValid = true;
+      printQuadWeightFieldSettings();
+      emitProtocolText(F("status"), F("currentAction"), F("weight field updated"));
+      finishPendingCommand();
+      return true;
+    }
+
+    case cmdQuadWeightFieldAdjust:
+      if ( !adjustQuadWeightFieldToCurrentPosition() ) return true;
+      printPosition();
+      finishPendingCommand();
+      return true;
+
+    case cmdQuadWeightFieldDefaults:
+      applyDefaultQuadWeightFieldSettings();
+      saveQuadWeightFieldSettingsToEEPROM();
+      quadWeightFieldSettingsEEPROMValid = true;
+      printQuadWeightFieldSettings();
+      emitProtocolText(F("status"), F("currentAction"), F("weight field defaults loaded"));
       finishPendingCommand();
       return true;
 
@@ -2932,7 +3206,11 @@ void terminate() {
   feedINT = feed * 100;
   scanINT = scan * 100;
   zINT = carriageZ * 100;
-  updateCableTelemetryFromPosition();
+  if ( currentRobotKind == robotKindFlatQuadTension ) {
+    syncFlatQuadCableTelemetryFromCurrentLengths();
+  } else {
+    updateCableTelemetryFromPosition();
+  }
   savePositionToEEPROM();
   //Serial.print(feedINT);
   //Serial.print(",");
@@ -3014,7 +3292,11 @@ void returnToHome() {
 }
 
 void printPosition() {
-  updateCableTelemetryFromPosition();
+  if ( currentRobotKind == robotKindFlatQuadTension ) {
+    syncFlatQuadCableTelemetryFromCurrentLengths();
+  } else {
+    updateCableTelemetryFromPosition();
+  }
   Serial.println("_____________________________________");
   Serial.print("robotKind\t");
   Serial.println(getRobotKindToken(currentRobotKind));

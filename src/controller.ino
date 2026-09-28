@@ -81,6 +81,8 @@ void controller() {
       pendingCommand = cmdStreamMove;
     } else if ( advCommand.equals("robotSetupWrite") ) {
       pendingCommand = cmdRobotSetupWrite;
+    } else if ( advCommand.equals("quadWeightFieldSet") ) {
+      pendingCommand = cmdQuadWeightFieldSet;
     } else if ( advCommand.equals("type") ) {
       pendingCommand = cmdSetType;
     } else if ( advCommand.equals("mode") ) {
@@ -198,6 +200,12 @@ void controller() {
     pendingCommand = cmdRobotSetupLoad;
   } else if ( command.equals("robotSetupDefaults") ) {
     pendingCommand = cmdRobotSetupDefaults;
+  } else if ( command.equals("quadWeightFieldGet") ) {
+    pendingCommand = cmdQuadWeightFieldGet;
+  } else if ( command.equals("quadWeightFieldAdjust") ) {
+    pendingCommand = cmdQuadWeightFieldAdjust;
+  } else if ( command.equals("quadWeightFieldDefaults") ) {
+    pendingCommand = cmdQuadWeightFieldDefaults;
   } else if ( command.equals("clearEEPROM") ) {
     pendingCommand = cmdClearEEPROM;
   } else {

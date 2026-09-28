@@ -99,7 +99,7 @@ The firmware now exposes a structured `vros` compatibility handshake for the Con
 Current firmware banner:
 
 ```text
-VROS_2.5.19_caseController
+VROS_2.5.26_caseController
 ```
 
 Current host protocol version:
@@ -140,7 +140,7 @@ Representative lines:
 
 ```text
 vros	compat	protocolVersion	1
-vros	compat	firmwareVersion	VROS_2.5.19_caseController
+vros	compat	firmwareVersion	VROS_2.5.26_caseController
 vros	status	state	idle
 vros	status	position	21.0000,31.0000
 vros	config	robotSetupStatus	valid
@@ -155,11 +155,12 @@ Important compatibility rule:
 
 ## Robot Setup EEPROM
 
-The firmware now maintains two EEPROM concepts:
+The firmware now maintains four EEPROM concepts:
 
 1. Robot setup block
 2. Speed settings block
 3. Position block
+4. Quad weight-field settings block
 
 Robot setup block:
 
@@ -262,6 +263,10 @@ robotSetupWrite	robotKind=hanging_vbot,motorDistance=62,scanOffset=10,feedOffset
 robotSetupWrite	robotKind=flat_quad_tension,scanOffset=0,feedOffset=0,width=42,height=50,lineResolution=0.5,stepsToCm=35,microstepResolution=0.125,quadHomeScan=21,quadHomeFeed=25,quadCableAFeed=1,quadCableBFeed=1,quadCableCFeed=1,quadCableDFeed=1,quadMotorHeight=10,motorAInverted=1,motorBInverted=1,motorCInverted=0,motorDInverted=0
 robotSetupLoad
 robotSetupDefaults
+quadWeightFieldGet
+quadWeightFieldSet	1,1.0,2.0,1.0
+quadWeightFieldAdjust
+quadWeightFieldDefaults
 clearEEPROM
 contact	draw|travel
 ```
@@ -272,6 +277,10 @@ Command intent:
 - `robotSetupWrite`: apply a full setup payload and persist it; both the legacy V-bot CSV payload and the newer schema-aware `key=value` payload are accepted, and both can now carry `microstepResolution`
 - `robotSetupLoad`: reload the EEPROM setup block into runtime state
 - `robotSetupDefaults`: write compiled defaults into EEPROM and make them active
+- `quadWeightFieldGet`: report the active flat-quad weight-field payout settings
+- `quadWeightFieldSet`: persist flat-quad weight-field settings as `enabled,maxPayoutCm,edgeExponent,cornerExponent`
+- `quadWeightFieldAdjust`: move only the flat-quad cables needed to match the current position to the active weight-field settings
+- `quadWeightFieldDefaults`: restore and persist the default flat-quad weight-field settings
 - `clearEEPROM`: wipe the full EEPROM, including robot setup and saved carriage position
 - `contact`: legacy compatibility command accepted as a no-op so older drawings and console workflows still parse cleanly
 
@@ -284,6 +293,7 @@ The firmware now has a first implementation pass for the flat quad robot:
 - schema-aware setup read/write support
 - quad home, motor-height, and 3D position persistence in EEPROM
 - quad scan/feed offsets plus `z` in cable geometry
+- a compile-time flat-quad corner/edge weight-field payout layer on the cable-length model
 - `robotKind`, `position` / `positionZ`, `target` / `targetZ`, and four-cable telemetry reporting
 - `motionSupport` and `motionBackend` reporting so the desktop can decide whether quad streaming is available
 - solved `x/y/z` reporting through the same position protocol used by the Control Station
@@ -373,6 +383,10 @@ robotSetupGet
 robotSetupWrite	62,10,20,50,0.5,82,1,0.997,35
 robotSetupLoad
 robotSetupDefaults
+quadWeightFieldGet
+quadWeightFieldSet	1,1.0,2.0,1.0
+quadWeightFieldAdjust
+quadWeightFieldDefaults
 clearEEPROM
 ```
 

@@ -411,6 +411,12 @@ long cableDeltaToSteps(float deltaCm, float compensation) {
   return long(roundf(deltaCm * stepsToCm * compensation));
 }
 
+float cableStepsToDeltaCm(long steps, float compensation) {
+  float effectiveStepsToCm = stepsToCm * compensation;
+  if ( effectiveStepsToCm == 0.0f ) return 0.0f;
+  return float(steps) / effectiveStepsToCm;
+}
+
 void buildAdjustedPoint(
   float rawScan,
   float rawFeed,
@@ -465,6 +471,57 @@ float clampQuadZ(float zPos) {
   return zPos;
 }
 
+float clampUnit(float value) {
+  if ( value < 0.0f ) return 0.0f;
+  if ( value > 1.0f ) return 1.0f;
+  return value;
+}
+
+float applyQuadWeightExponent(float value, float exponent) {
+  if ( value <= 0.0f ) return 0.0f;
+  if ( exponent == 1.0f ) return value;
+  return pow(value, exponent);
+}
+
+void applyQuadWeightFieldCompensation(
+  float scanPos,
+  float feedPos,
+  float cableLengths[FLAT_QUAD_AXIS_COUNT]
+) {
+  if ( !quadWeightFieldEnabled ) return;
+  if ( currentRobotKind != robotKindFlatQuadTension ) return;
+  if ( width <= 0.0f || height <= 0.0f ) return;
+  if ( quadWeightFieldMaxPayoutCm <= 0.0f ) return;
+
+  float normalizedX = clampUnit(scanPos / width);
+  float normalizedY = clampUnit(feedPos / height);
+
+  float nearLeft = 1.0f - normalizedX;
+  float nearRight = normalizedX;
+  float nearTop = 1.0f - normalizedY;
+  float nearBottom = normalizedY;
+
+  float centerXDistance = fabs(normalizedX - 0.5f) * 2.0f;
+  float centerYDistance = fabs(normalizedY - 0.5f) * 2.0f;
+  float edgeStrength = centerXDistance > centerYDistance ? centerXDistance : centerYDistance;
+  edgeStrength = applyQuadWeightExponent(edgeStrength, quadWeightFieldEdgeExponent);
+
+  float weights[FLAT_QUAD_AXIS_COUNT] = {
+    nearLeft * nearTop,
+    nearRight * nearTop,
+    nearRight * nearBottom,
+    nearLeft * nearBottom
+  };
+
+  for ( byte axisIndex = 0; axisIndex < FLAT_QUAD_AXIS_COUNT; axisIndex++ ) {
+    float curvedWeight = applyQuadWeightExponent(
+      weights[axisIndex],
+      quadWeightFieldCornerExponent
+    );
+    cableLengths[axisIndex] += curvedWeight * edgeStrength * quadWeightFieldMaxPayoutCm;
+  }
+}
+
 void computeQuadCableLengths(
   float scanPos,
   float feedPos,
@@ -480,6 +537,7 @@ void computeQuadCableLengths(
   cableLengths[1] = sqrt(sq(scanPos - rightAnchor) + sq(feedPos - topAnchor) + sq(verticalOffset));
   cableLengths[2] = sqrt(sq(scanPos - rightAnchor) + sq(feedPos - bottomAnchor) + sq(verticalOffset));
   cableLengths[3] = sqrt(sq(scanPos - leftAnchor) + sq(feedPos - bottomAnchor) + sq(verticalOffset));
+  applyQuadWeightFieldCompensation(scanPos, feedPos, cableLengths);
 }
 
 void prepareGestureTarget(float xPos, float yPos, boolean hasZ, float zPos) {
@@ -644,8 +702,12 @@ void movePenBresenhamQuad(float xPos, float yPos, boolean hasZ, float zPos) {
     return;
   }
 
-  float currentLengths[FLAT_QUAD_AXIS_COUNT] = {0.0f, 0.0f, 0.0f, 0.0f};
-  computeQuadCableLengths(scan, feed, carriageZ, currentLengths);
+  float currentLengths[FLAT_QUAD_AXIS_COUNT] = {
+    currentCableLengths[0],
+    currentCableLengths[1],
+    currentCableLengths[2],
+    currentCableLengths[3]
+  };
 
   for ( long segmentIndex = 1; segmentIndex <= segmentCount; segmentIndex++ ) {
     float interpolation = float(segmentIndex) / float(segmentCount);
@@ -688,14 +750,20 @@ void movePenBresenhamQuad(float xPos, float yPos, boolean hasZ, float zPos) {
     runMotionSteps(axisSteps, FLAT_QUAD_AXIS_COUNT);
 
     for ( byte axisIndex = 0; axisIndex < FLAT_QUAD_AXIS_COUNT; axisIndex++ ) {
-      currentLengths[axisIndex] = nextLengths[axisIndex];
+      currentLengths[axisIndex] += cableStepsToDeltaCm(
+        axisSteps[axisIndex],
+        getQuadCableCompensation(axisIndex)
+      );
     }
     scan = adjustedScan;
     feed = adjustedFeed;
     carriageZ = adjustedZ;
   }
 
-  updateCableTelemetryFromPosition();
+  for ( byte axisIndex = 0; axisIndex < FLAT_QUAD_AXIS_COUNT; axisIndex++ ) {
+    currentCableLengths[axisIndex] = currentLengths[axisIndex];
+  }
+  syncFlatQuadCableTelemetryFromCurrentLengths();
   printGestureFooter();
   terminate();
 }
